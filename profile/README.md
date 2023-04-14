@@ -2,9 +2,9 @@
 
 This service started from a mistake I made in 2021.
 
-I promised to eat something with someone, but after a while, I forgot what to do when I met, although I knew we were meeting.
+I promised to eat something with her, but after some days, I forgot what to eat when I met, although I knew we were meeting.
 
-I forgot the promise and told her to eat whatever I wanted, and she felt sorry for what I forgot.
+I forgot the promise and told her to eat whatever I wanted, and she didn't feel good for what I forgot.
 
 Of course, it was natural that she was upset because this experience was not the first or second time.
 
