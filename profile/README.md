@@ -1,5 +1,19 @@
 ## Hi there 👋
 
+This service started from a mistake I made in 2021.
+
+I promised to eat something with someone, but after a while, I forgot what to do when I met, although I knew we were meeting.
+
+I forgot the promise and told her to eat whatever I wanted, and she felt sorry for what I forgot.
+
+Of course, it was natural that she was upset because this experience was not the first or second time.
+
+So I wanted to create a service where each other's schedule is shared.
+
+I hope that through this service, people will connect each other with each other's time.
+
+It will be made soon after passing the 42 Seoul Inner Circle, so please wait.
+
 <!--
 
 **Here are some ideas to get you started:**
