@@ -1,0 +1,451 @@
+name: Claude Code Review (Light — Stack Agnostic)
+
+# Lightweight reusable — Claude AI 리뷰만 (객관 게이트 phase1-ci 없음).
+# 모든 stack에 적용 가능. 객관 검증 (build/test/lint)은 caller repo의 자체 워크플로 담당.
+#
+# Caller exemplar:
+#   on:
+#     pull_request:
+#       types: [opened, synchronize, ready_for_review, reopened]
+#       paths: ['src/**', '*.ts', '*.tsx', 'package.json']  # repo별 적절히
+#   jobs:
+#     call:
+#       permissions:
+#         contents: read
+#         pull-requests: write
+#         issues: read
+#         id-token: write
+#       uses: ittae/.github/.github/workflows/claude-review-light.yml@main
+#       with:
+#         stack: 'Node.js / TypeScript / React'
+#       secrets: inherit
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        description: 'PR number to review (workflow_dispatch from caller)'
+        required: false
+        type: string
+      stack:
+        description: 'Stack hint (e.g., "Node/TS/React", "Python/FastAPI", "Go")'
+        type: string
+        default: 'auto-detect from PR context'
+      model:
+        type: string
+        default: 'claude-opus-4-7'
+      pr_size_limit:
+        type: number
+        default: 500
+      iterate_limit:
+        type: number
+        default: 5
+      high_risk_paths:
+        description: 'Regex of sensitive paths needing human review'
+        type: string
+        default: '^\.github/workflows/|^\.env|/secret|/secrets/|password|api[_-]?key|/auth/'
+
+env:
+  PR_NUM: ${{ github.event.pull_request.number || inputs.pr_number }}
+  REPO: ${{ github.repository }}
+  MODEL: ${{ inputs.model }}
+  PR_SIZE_LIMIT: ${{ inputs.pr_size_limit }}
+  ITERATE_LIMIT: ${{ inputs.iterate_limit }}
+  HIGH_RISK_PATHS: ${{ inputs.high_risk_paths }}
+  STACK: ${{ inputs.stack }}
+
+jobs:
+  # ─────────────────────────────────────────
+  # GATE 0: Skip 조건 (skip-ci / bot / rebase / merge commit)
+  # ─────────────────────────────────────────
+  gate-skip:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.check.outputs.skip }}
+      reason: ${{ steps.check.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - id: check
+        run: |
+          # Bot author skip
+          if [ "${{ github.actor }}" = "dependabot[bot]" ] || \
+             [ "${{ github.event.pull_request.user.type }}" = "Bot" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "reason=bot-author" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # workflow_dispatch는 항상 진행
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "skip=false" >> $GITHUB_OUTPUT; exit 0
+          fi
+
+          BASE_SHA="${{ github.event.pull_request.base.sha }}"
+          HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+
+          # [skip-ci] 커밋 메시지
+          if git log "$BASE_SHA..$HEAD_SHA" --pretty=%B | grep -qiE '\[skip.?ci\]|\[ci.?skip\]'; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "reason=skip-ci-tag" >> $GITHUB_OUTPUT; exit 0
+          fi
+
+          # Merge commit (Update Branch 버튼 등)
+          HEAD_MSG=$(git log -1 --format=%s "$HEAD_SHA")
+          if echo "$HEAD_MSG" | grep -qE "^Merge branch '"; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "reason=merge-commit" >> $GITHUB_OUTPUT; exit 0
+          fi
+
+          # Rebase 감지 (3-dot diff 해시 비교 — 코드 동일하면 skip)
+          if [ "${{ github.event.action }}" = "synchronize" ]; then
+            OLD="${{ github.event.before }}"
+            NEW="${{ github.event.after }}"
+            git fetch origin "$OLD" --depth=1 2>/dev/null || true
+            if git cat-file -e "$OLD" 2>/dev/null; then
+              OLD_HASH=$(git diff "$BASE_SHA...$OLD" 2>/dev/null | grep -v "^diff\|^index\|^---\|^+++" | md5sum | awk '{print $1}')
+              NEW_HASH=$(git diff "$BASE_SHA...$NEW" 2>/dev/null | grep -v "^diff\|^index\|^---\|^+++" | md5sum | awk '{print $1}')
+              if [ "$OLD_HASH" = "$NEW_HASH" ]; then
+                echo "skip=true" >> $GITHUB_OUTPUT
+                echo "reason=rebase-only" >> $GITHUB_OUTPUT; exit 0
+              fi
+            fi
+          fi
+
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "reason=" >> $GITHUB_OUTPUT
+
+  # ─────────────────────────────────────────
+  # GATE 1: PR 크기 + 위험도 분류
+  # ─────────────────────────────────────────
+  gate-classify:
+    needs: gate-skip
+    if: needs.gate-skip.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      verdict: ${{ steps.classify.outputs.verdict }}
+      pr_size: ${{ steps.classify.outputs.pr_size }}
+    steps:
+      - id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # PR 크기
+          ADDITIONS=$(gh pr view "$PR_NUM" -R "$REPO" --json additions --jq .additions)
+          DELETIONS=$(gh pr view "$PR_NUM" -R "$REPO" --json deletions --jq .deletions)
+          TOTAL=$((ADDITIONS + DELETIONS))
+          echo "pr_size=$TOTAL" >> $GITHUB_OUTPUT
+
+          if [ "$TOTAL" -gt "$PR_SIZE_LIMIT" ]; then
+            gh pr edit "$PR_NUM" -R "$REPO" --add-label "too-large" 2>/dev/null || true
+            BODY=$(printf '🚫 **PR 크기 %s줄 — %s줄 초과**\n\n500줄 넘는 PR은 AI/사람 모두 정확도가 급락합니다. 단일 concern 단위로 분할 후 다시 올려주세요.\n\n@claude @codex @gemini @copilot 이 PR을 의미 단위로 쪼개서 별도 PR로 다시 만들어주세요.' "$TOTAL" "$PR_SIZE_LIMIT")
+            gh pr comment "$PR_NUM" -R "$REPO" --body "$BODY" || true
+            echo "verdict=too-large" >> $GITHUB_OUTPUT; exit 0
+          fi
+
+          # 위험도 분류 — high-risk이면 라벨/코멘트만 부여하고 진행 (AI 리뷰는 받음, 사람 머지 강제)
+          CHANGED=$(gh pr diff "$PR_NUM" -R "$REPO" --name-only)
+          MATCHED=$(echo "$CHANGED" | grep -E "$HIGH_RISK_PATHS" || true)
+          if [ -n "$MATCHED" ]; then
+            gh pr edit "$PR_NUM" -R "$REPO" --add-label "high-risk" --add-label "needs-human-review" 2>/dev/null || true
+            MATCHED_LIST=$(echo "$MATCHED" | sed 's/^/- /')
+            BODY=$(printf '⚠️ **민감 영역 변경 감지** — AI 리뷰는 진행되지만 자동 머지 라벨(ai-approved) 부여 안 됨. 사람 머지 필수.\n\n매치된 파일:\n```\n%s\n```\n\nHigh-risk 영역 (auth, secure_storage, iap, router, storage_keys, pubspec, native configs, .github/workflows, .env) PR은 점수 통과 시에도 needs-human-review 라벨 유지.' "$MATCHED_LIST")
+            gh pr comment "$PR_NUM" -R "$REPO" --body "$BODY" || true
+          fi
+
+          echo "verdict=proceed" >> $GITHUB_OUTPUT
+
+
+  # ─────────────────────────────────────────
+  # PHASE 2: Multi-agent AI 리뷰 (Opus 4.7)
+  # 단일 action 호출 안에서 5 perspective + verifier 지시
+  # (PoC: matrix 분리는 Phase 다음 단계로)
+  # ─────────────────────────────────────────
+  phase2-review:
+    needs: gate-classify
+    if: needs.gate-classify.outputs.verdict == 'proceed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: read
+      id-token: write
+    outputs:
+      iteration: ${{ steps.guard.outputs.iteration }}
+      max_prior_score: ${{ steps.guard.outputs.max_prior_score }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - id: guard
+        name: Re-review guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          ITER=$(gh pr view "$PR_NUM" -R "$REPO" --json comments \
+            --jq '[.comments[] | select(.author.login == "claude") | select(.body | contains("총점:"))] | length')
+          [[ ! "$ITER" =~ ^[0-9]+$ ]] && ITER=0
+          echo "iteration=$ITER" >> $GITHUB_OUTPUT
+
+      - name: Pre-fetch PR context (개선 #4)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # PR metadata + diff + 이전 Claude 리뷰를 미리 fetch.
+          # Claude action이 매번 gh pr view/diff 호출하는 토큰 cost 절감.
+          gh pr view "$PR_NUM" -R "$REPO" --json body,title,files,additions,deletions \
+            > /tmp/pr-context.json
+          gh pr diff "$PR_NUM" -R "$REPO" > /tmp/pr-diff.patch 2>/dev/null || echo "" > /tmp/pr-diff.patch
+          gh pr view "$PR_NUM" -R "$REPO" --json comments \
+            --jq '[.comments[] | select(.author.login == "claude")] | last | .body // ""' \
+            > /tmp/prior-review.md
+          echo "✓ PR context fetched: /tmp/{pr-context.json,pr-diff.patch,prior-review.md}"
+
+          MAX_PRIOR=$(gh pr view "$PR_NUM" -R "$REPO" --json comments \
+            --jq '[.comments[] | select(.author.login == "claude") | .body] | join("\n")' \
+            | grep -oP '총점:\s*\K[0-9]+(\.[0-9]+)?' | sort -rn | head -1)
+          [[ ! "$MAX_PRIOR" =~ ^[0-9]+(\.[0-9]+)?$ ]] && MAX_PRIOR=0
+          echo "max_prior_score=$MAX_PRIOR" >> $GITHUB_OUTPUT
+
+          # 재시도 한도
+          if [ "$ITER" -ge "$ITERATE_LIMIT" ]; then
+            gh pr edit "$PR_NUM" -R "$REPO" --add-label "needs-human-review" --remove-label "ai-iterating" 2>/dev/null || true
+            BODY=$(printf '🛑 **재리뷰 %s회 한도 도달** — AI self-iterate 종료. 사람 개입 필요.' "$ITERATE_LIMIT")
+            gh pr comment "$PR_NUM" -R "$REPO" --body "$BODY" || true
+            exit 1
+          fi
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: '--model ${{ env.MODEL }} --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh search:*),Bash(echo:*)"'
+          prompt: |
+            REPO: ${{ env.REPO }}
+            PR NUMBER: ${{ env.PR_NUM }}
+            ITERATION: ${{ steps.guard.outputs.iteration }}
+            MAX PRIOR SCORE: ${{ steps.guard.outputs.max_prior_score }}
+            STACK: ${{ env.STACK }}
+
+            ## 📂 PR 컨텍스트 (pre-fetched, 별도 gh 호출 불필요)
+
+            아래 파일에 PR 정보가 이미 fetch되어 있습니다. `cat`으로 읽으세요:
+            - `/tmp/pr-context.json` — title, description, files, additions, deletions
+            - `/tmp/pr-diff.patch` — full diff
+            - `/tmp/prior-review.md` — 이전 Claude 리뷰 (재리뷰 시)
+
+            `gh pr view` / `gh pr diff` 별도 호출 자제 (토큰 절약).
+
+            ## 🎯 미션
+            이 PR을 5개 perspective로 병렬 검토하고, 마지막에 Verifier로 false positive를 거른 뒤 결과를 **인라인 suggestion 우선 + 종합 코멘트 1개**로 게시하세요.
+
+            ## 🎨 출력 우선순위 (MANDATORY — 작은 fix는 suggestion 우선)
+
+            **1. 인라인 suggestion** — 1~10줄 fix는 **모두 이 방식**:
+            - `mcp__github_inline_comment__create_inline_comment` tool 사용
+            - body에 GitHub 표준 ` ```suggestion ` 블록 포함:
+              ```
+              [HIGH] **Architecture: layer boundary 위반**
+
+              Caller가 lower layer를 직접 호출하면 architecture 위반. abstraction 경유로 변경:
+
+              ` ```suggestion `
+              service.doSomething(input);  // not repository.directCall(input)
+              ` ``` `
+              ```
+            - 작성자가 1-click "Commit suggestion" 가능 → 빠른 적용
+
+            **2. 종합 코멘트 (1개만)** — 점수 + JSON 메타 + 인라인으로 못 표현한 큰 항목:
+            - 신규 파일 생성, 다중 file 리팩터링, 광범위 변경
+            - 이런 항목은 코멘트로 설명 + `@claude <task>` 멘션 위임 권장
+            - 예: "신규 파일 `xxx_test.dart` 작성 필요 — `@claude xxx 테스트 작성해주세요` 로 위임 가능"
+
+            **3. 비율 가이드**: 보통 PR당 인라인 5~15개 + 종합 코멘트 1개. 종합 코멘트만 게시 금지 (작은 fix는 suggestion으로).
+
+            ## 🔁 재리뷰 가드 (ITERATION > 0일 때 MANDATORY)
+
+            **트랙 A — 계약 이행 검증 (점수 반영)**
+            - 이전 리뷰가 지적한 HIGH/MEDIUM/LOW 항목만 점수 계산
+            - 해결됨 → 점수 회복 / 미해결 → 감점 유지
+            - **FORBIDDEN**: 이전에 지적·해결한 카테고리를 다른 메서드에서 발견했다고 다시 감점 (트랙 B로 분리)
+            - **MANDATORY**: 새 점수 ≥ MAX_PRIOR_SCORE (단조성 강제)
+
+            **트랙 B — 신규 발견 (참고용, 점수 미반영)**
+            - 이전 리뷰에 없던 새 카테고리는 이 트랙에만 기재
+            - PASS/FAIL 판정에 영향 없음
+            - 다음 재리뷰에서도 트랙 B 유지 (소급 강제 금지)
+
+            ## 🔍 5 Perspective 검토 (Phase 2A — parallel)
+            각 perspective를 독립적으로 검사. 다른 perspective와 finding 공유 금지.
+
+            **A. Security**: secret 노출, 입력 검증, auth bypass, injection, 안전하지 않은 deserialize
+            **B. Architecture**: layer/module boundary 위반, framework convention 위반, DI/IoC 위반, dead code, circular dependency
+            **C. Bug & null-safety**: late init 위험, async pitfalls (await 누락, Future.value 오용), null assertion 남용, race condition
+            **D. Performance**: 불필요 rebuild, list/map alloc 폭증, N+1, sync I/O on UI thread
+            **E. Test**: 의도-구현 불일치, 누락 edge case, mock 과용, integration vs unit 혼용
+
+            ## 🔬 Verifier 단계 (Phase 2B — sequential)
+            각 perspective의 finding을 실제 코드와 대조:
+            - finding이 실제로 그 코드에 존재하는가?
+            - 제안된 fix가 기존 의도를 깨지 않는가?
+            - 다른 finding과 중복되는가? (병합)
+            - false positive 거름
+
+            ## 📊 점수 산정 (10점 만점)
+            - HIGH: -2.0 / MEDIUM: -1.0 / LOW: -0.5
+            - 7.5 미달 → FAIL
+            - 객관 게이트(Phase 1)는 이미 통과했으니 점수에 가산점 없음
+
+            ## ✍️ 출력 (단일 코멘트 1개만)
+            아래 템플릿 그대로 사용. 한국어 작성 (기술 용어 영어 OK).
+
+            ```markdown
+            ## 🎯 코드 리뷰 결과 (iteration ${{ steps.guard.outputs.iteration }})
+
+            **총점: X.X / 10.0** {✅ PASS | ❌ FAIL}
+
+            > Stack: (env.STACK 값 또는 자동 감지 결과)
+            > PR 크기: (Phase 1에서 측정한 줄 수)
+            > Coverage: (Phase 1에서 측정한 %)
+
+            ### ✅ 잘한 점
+            (한국어)
+
+            ### 🚨 HIGH (Must Fix)
+            - [ ] (-2.0) **항목 제목** — Perspective: {Security|Architecture|...}
+
+            (문제 설명)
+
+            ```dart
+            // ❌ 문제 코드
+            ```
+
+            **해결 방법**: (구체적)
+
+            ### ⚠️ MEDIUM (Should Fix)
+            - [ ] (-1.0) **항목 제목** — Perspective: ...
+
+            ### 💡 LOW (Nice to Have)
+            - [ ] (-0.5) **항목 제목**
+
+            ### 📋 최종 판정
+            ✅ PASS / ❌ FAIL (X.X / 10.0)
+
+            ---
+            (재리뷰 모드일 때만 트랙 A/B 추가 섹션)
+            ```
+
+            ## 💾 점수 기록 + JSON 메타데이터 (MANDATORY 마지막 단계)
+
+            **두 가지 모두 필수**:
+
+            1. 점수 파일:
+            ```bash
+            echo "X.X" > /tmp/review_score.txt
+            ```
+
+            2. 리뷰 코멘트 본문 **맨 끝**에 hidden HTML comment로 JSON 메타데이터 첨부 (개선 #2):
+            ```html
+            <!-- ai-review-meta
+            {"score": 8.0, "iteration": 0, "high": 0, "medium": 2, "low": 1, "categories": ["Architecture","Test"], "verdict": "PASS"}
+            -->
+            ```
+
+            phase3-decide가 이 JSON을 우선 파싱합니다 (정규식 fallback 대비). categories는 finding이 발견된 perspective 이름들. verdict는 "PASS" 또는 "FAIL".
+
+  # ─────────────────────────────────────────
+  # PHASE 3: Decision — 라벨 부여 + self-iterate 신호
+  # ─────────────────────────────────────────
+  phase3-decide:
+    needs: [gate-classify, phase2-review]
+    if: needs.gate-classify.outputs.verdict == 'proceed' && needs.phase2-review.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: 점수 추출 + 단조성 보정 (JSON meta 우선)
+        id: score
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sleep 5  # Claude 코멘트 등록 대기
+          LATEST=$(gh pr view "$PR_NUM" -R "$REPO" --json comments \
+            --jq '[.comments[] | select(.author.login == "claude")] | last | .body')
+
+          # JSON 메타 우선 파싱 (개선 #2 — 정규식보다 robust)
+          META_JSON=$(echo "$LATEST" | sed -n '/<!-- ai-review-meta/,/-->/p' \
+            | sed '1d;$d' | tr -d '\n')
+          if [ -n "$META_JSON" ]; then
+            SCORE=$(echo "$META_JSON" | jq -r '.score // empty' 2>/dev/null)
+            HIGH_COUNT=$(echo "$META_JSON" | jq -r '.high // 0' 2>/dev/null)
+            MEDIUM_COUNT=$(echo "$META_JSON" | jq -r '.medium // 0' 2>/dev/null)
+            CATEGORIES=$(echo "$META_JSON" | jq -r '.categories // [] | join(", ")' 2>/dev/null)
+            echo "✓ JSON 메타 파싱 성공: score=$SCORE high=$HIGH_COUNT medium=$MEDIUM_COUNT cats=[$CATEGORIES]"
+          fi
+          # JSON 없거나 파싱 실패 시 정규식 fallback
+          if [ -z "$SCORE" ]; then
+            SCORE=$(echo "$LATEST" | grep -oP '총점:\s*\K[0-9]+(\.[0-9]+)?' | head -1)
+            HIGH_COUNT=0; MEDIUM_COUNT=0; CATEGORIES=""
+            echo "⚠️ JSON 메타 없음 — 정규식 fallback 사용"
+          fi
+          echo "high_count=${HIGH_COUNT:-0}" >> $GITHUB_OUTPUT
+          echo "medium_count=${MEDIUM_COUNT:-0}" >> $GITHUB_OUTPUT
+          echo "categories=$CATEGORIES" >> $GITHUB_OUTPUT
+          SCORE=$(echo "$LATEST" | grep -oP '총점:\s*\K[0-9]+(\.[0-9]+)?' | head -1)
+
+          if [ -z "$SCORE" ]; then
+            echo "❌ 점수 추출 실패"
+            gh pr comment "$PR_NUM" -R "$REPO" --body "⚠️ AI 리뷰 점수 추출 실패. 사람 확인 필요." || true
+            gh pr edit "$PR_NUM" -R "$REPO" --add-label "needs-human-review" 2>/dev/null || true
+            exit 1
+          fi
+
+          # 단조성: 재리뷰에서 점수 떨어지면 보정
+          MAX_PRIOR="${{ needs.phase2-review.outputs.max_prior_score }}"
+          if [ "${{ needs.phase2-review.outputs.iteration }}" != "0" ] && \
+             (( $(echo "$SCORE < $MAX_PRIOR" | bc -l) )); then
+            echo "⚠️ 점수 단조성 위반 — $SCORE < $MAX_PRIOR. 보정."
+            SCORE="$MAX_PRIOR"
+          fi
+          echo "score=$SCORE" >> $GITHUB_OUTPUT
+
+      - name: 라벨 + self-iterate 신호
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SCORE="${{ steps.score.outputs.score }}"
+          PASS_THRESHOLD=7.5
+
+          # 모든 ai-* 라벨 정리
+          for L in ai-approved ai-iterating needs-rework ai-rejected; do
+            gh pr edit "$PR_NUM" -R "$REPO" --remove-label "$L" 2>/dev/null || true
+          done
+
+          ITER='${{ needs.phase2-review.outputs.iteration }}'
+          # high-risk 라벨이 있는지 확인 (gate-classify에서 부여됨)
+          IS_HIGH_RISK=$(gh pr view "$PR_NUM" -R "$REPO" --json labels --jq '[.labels[] | select(.name == "high-risk")] | length')
+          [[ ! "$IS_HIGH_RISK" =~ ^[0-9]+$ ]] && IS_HIGH_RISK=0
+
+          if (( $(echo "$SCORE >= $PASS_THRESHOLD" | bc -l) )); then
+            if [ "$IS_HIGH_RISK" -gt 0 ]; then
+              # high-risk: ai-approved 라벨 부여 X, needs-human-review 유지
+              gh pr edit "$PR_NUM" -R "$REPO" --add-label "needs-human-review" 2>/dev/null || true
+              BODY=$(printf '✅ **AI 리뷰 통과** (점수 %s/10.0, iteration %s) — but **high-risk 영역**\n\n자동 머지 라벨(ai-approved) 부여 안 됨. **사람 검토 후 머지 필수**.' "$SCORE" "$ITER")
+              gh pr comment "$PR_NUM" -R "$REPO" --body "$BODY" || true
+            else
+              gh pr edit "$PR_NUM" -R "$REPO" --add-label "ai-approved" 2>/dev/null || true
+              BODY=$(printf '✅ **AI 리뷰 통과** (점수 %s/10.0, iteration %s)\n\n사람 1-click 머지 대기 중. `gh pr merge %s --squash` 또는 web UI에서 처리.' "$SCORE" "$ITER" "$PR_NUM")
+              gh pr comment "$PR_NUM" -R "$REPO" --body "$BODY" || true
+            fi
+          else
+            gh pr edit "$PR_NUM" -R "$REPO" --add-label "ai-iterating" --add-label "needs-rework" 2>/dev/null || true
+            HIGH_C='${{ steps.score.outputs.high_count }}'
+            MED_C='${{ steps.score.outputs.medium_count }}'
+            CATS='${{ steps.score.outputs.categories }}'
+            # 자가 수정 contract 명확화 (개선 #1)
+            BODY=$(printf '🔄 **자가 수정 요청** (점수 %s/10.0 < %s, iteration %s/%s)\n\n@claude @codex @gemini @copilot\n\n## 작업 contract\n\n**우선순위**: HIGH (필수) > MEDIUM (권장) > LOW (선택)\n\n현재 미해결: HIGH=%s, MEDIUM=%s | 카테고리: %s\n\n## 응답 형식 (MANDATORY)\n\n1. **HIGH 항목부터** 위 리뷰 코멘트의 "해결 방법"을 따라 코드 수정\n2. 각 항목별 1 commit 분리 (atomic) 또는 한 commit에 묶기 (작은 PR)\n3. Commit message: `fix(<scope>): <한 줄 요약>` 형식\n4. PR push로 자동 sync → 워크플로 재트리거 → 재리뷰 (트랙 A)\n5. 재리뷰는 이전 지적 항목만 점수 반영 (골대 이동 금지)\n\n## 재시도 한도\n\n%s회 누적 후 자동 종료 → 사람 검토 위임 (`needs-human-review` 라벨)\n\n## 요청 사항\n\n어느 도구든 먼저 응답한 도구가 처리. 응답 시 무엇을 수정했는지 commit message에 명시.' "$SCORE" "$PASS_THRESHOLD" "$ITER" "$ITERATE_LIMIT" "$HIGH_C" "$MED_C" "$CATS" "$ITERATE_LIMIT")
+            gh pr comment "$PR_NUM" -R "$REPO" --body "$BODY" || true
+          fi
