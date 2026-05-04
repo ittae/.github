@@ -104,14 +104,20 @@ jobs:
             echo "$FIREBASE_OPTIONS_PROD_B64" | base64 --decode > lib/firebase_options_prod.dart
           fi
 
-      - run: flutter pub get
-
-      # Cache가 partial restore되거나 advisories decode 실패로 일부 패키지 archive가
-      # corrupt 상태인 케이스 방지. cache hit이 아닐 때만 실행해 비용 최소화.
-      # (analyzer plugin 로드 시 누락 파일 'No such file or directory' 에러 방지)
-      - name: Repair pub cache (only on cache miss/partial restore)
+      # Cache가 정확히 일치하지 않으면 (cache miss 또는 restore-keys로 partial
+      # restore) ~/.pub-cache를 통째 정리한 뒤 fresh pub get을 실행한다.
+      # Codex P1: 'pub cache repair'는 .pub-cache의 모든 hosted/git 패키지를
+      # 재설치하므로 stale/obsolete (private/unavailable git source 등) 패키지가
+      # 잔존하면 현재 lock과 무관해도 job이 fail. cache 자체를 폐기하면 stale
+      # 패키지가 문제될 여지를 차단하고, fresh pub get은 lock 기반이라 필요한
+      # 패키지만 받는다.
+      - name: Purge stale pub cache on partial restore
         if: steps.pub_cache.outputs.cache-hit != 'true'
-        run: flutter pub cache repair
+        run: |
+          echo "Cache miss or partial restore — purging ~/.pub-cache to avoid stale packages"
+          rm -rf ~/.pub-cache
+
+      - run: flutter pub get
 
       - name: Generate code (build_runner)
         run: dart run build_runner build --delete-conflicting-outputs
