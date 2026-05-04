@@ -192,6 +192,18 @@ jobs:
             ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}-
             ${{ runner.os }}-flutter-
 
+      - name: Decode firebase_options (if configured)
+        env:
+          FIREBASE_OPTIONS_DEV_B64: ${{ secrets.FIREBASE_OPTIONS_DEV_B64 }}
+          FIREBASE_OPTIONS_PROD_B64: ${{ secrets.FIREBASE_OPTIONS_PROD_B64 }}
+        run: |
+          if [ -n "$FIREBASE_OPTIONS_DEV_B64" ]; then
+            echo "$FIREBASE_OPTIONS_DEV_B64"  | base64 --decode > lib/firebase_options_dev.dart
+          fi
+          if [ -n "$FIREBASE_OPTIONS_PROD_B64" ]; then
+            echo "$FIREBASE_OPTIONS_PROD_B64" | base64 --decode > lib/firebase_options_prod.dart
+          fi
+
       - run: flutter pub get
 
       - name: Generate code (build_runner)
