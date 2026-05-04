@@ -84,10 +84,11 @@ jobs:
           path: |
             ~/.pub-cache
             .dart_tool
-          key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}-${{ hashFiles('lib/**/*.dart') }}
-          restore-keys: |
-            ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}-
-            ${{ runner.os }}-flutter-
+          # Cache key는 pubspec.lock 기반 정확 일치만 hit. restore-keys 없음 —
+          # partial restore로 인한 stale/corrupt 패키지 잔존 위험 자체를 차단한다.
+          # lock이 다르면 자동으로 cache miss 처리되어 fresh download. lock 동일
+          # 시에만 hit이라 archive 무결성도 보장됨.
+          key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}
 
       - name: Decode firebase_options (if configured)
         env:
