@@ -78,17 +78,15 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Cache pub + dart_tool (build_runner incremental)
+      # ~/.pub-cache는 subosito/flutter-action의 자체 cache(cache: true)에 위임한다.
+      # 두 cache step이 같은 경로를 다른 key로 동시에 cache/restore하면 한쪽이
+      # 다른쪽의 archive를 corrupt 상태로 덮어 쓰는 충돌이 발생. flutter-action에
+      # 위임하면 SDK + ~/.pub-cache가 통합 관리됨. 우리 cache는 .dart_tool 전용.
+      - name: Cache .dart_tool (build_runner incremental output)
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.pub-cache
-            .dart_tool
-          # Cache key는 pubspec.lock 기반 정확 일치만 hit. restore-keys 없음 —
-          # partial restore로 인한 stale/corrupt 패키지 잔존 위험 자체를 차단한다.
-          # lock이 다르면 자동으로 cache miss 처리되어 fresh download. lock 동일
-          # 시에만 hit이라 archive 무결성도 보장됨.
-          key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}
+          path: .dart_tool
+          key: ${{ runner.os }}-dart-tool-${{ hashFiles('pubspec.lock') }}
 
       - name: Decode firebase_options (if configured)
         env:
