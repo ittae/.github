@@ -79,14 +79,17 @@ jobs:
           cache: true
 
       - name: Cache pub + dart_tool (build_runner incremental)
+        id: pub_cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.pub-cache
             .dart_tool
-          key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}-${{ hashFiles('lib/**/*.dart') }}
+          # Cache key는 pubspec.lock만 기반 — lib/**/*.dart hash는 모든 코드 변경마다
+          # cache miss를 만들어 매번 fresh pub fetch가 발생함. lock이 같으면 의존성도
+          # 동일하므로 cache 재사용이 안전함.
+          key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}
           restore-keys: |
-            ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}-
             ${{ runner.os }}-flutter-
 
       - name: Decode firebase_options (if configured)
@@ -102,6 +105,13 @@ jobs:
           fi
 
       - run: flutter pub get
+
+      # Cache가 partial restore되거나 advisories decode 실패로 일부 패키지 archive가
+      # corrupt 상태인 케이스 방지. cache hit이 아닐 때만 실행해 비용 최소화.
+      # (analyzer plugin 로드 시 누락 파일 'No such file or directory' 에러 방지)
+      - name: Repair pub cache (only on cache miss/partial restore)
+        if: steps.pub_cache.outputs.cache-hit != 'true'
+        run: flutter pub cache repair
 
       - name: Generate code (build_runner)
         run: dart run build_runner build --delete-conflicting-outputs
