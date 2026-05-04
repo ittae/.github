@@ -79,18 +79,16 @@ jobs:
           cache: true
 
       - name: Cache pub + dart_tool (build_runner incremental)
-        id: pub_cache
         uses: actions/cache@v4
         with:
           path: |
             ~/.pub-cache
             .dart_tool
-          # Cache key는 pubspec.lock만 기반 — lib/**/*.dart hash는 모든 코드 변경마다
-          # cache miss를 만들어 매번 fresh pub fetch가 발생함. lock이 같으면 의존성도
-          # 동일하므로 cache 재사용이 안전함.
+          # Cache key는 pubspec.lock 기반 정확 일치만 hit. restore-keys 없음 —
+          # partial restore로 인한 stale/corrupt 패키지 잔존 위험 자체를 차단한다.
+          # lock이 다르면 자동으로 cache miss 처리되어 fresh download. lock 동일
+          # 시에만 hit이라 archive 무결성도 보장됨.
           key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-flutter-
 
       - name: Decode firebase_options (if configured)
         env:
@@ -103,19 +101,6 @@ jobs:
           if [ -n "$FIREBASE_OPTIONS_PROD_B64" ]; then
             echo "$FIREBASE_OPTIONS_PROD_B64" | base64 --decode > lib/firebase_options_prod.dart
           fi
-
-      # Cache가 정확히 일치하지 않으면 (cache miss 또는 restore-keys로 partial
-      # restore) ~/.pub-cache를 통째 정리한 뒤 fresh pub get을 실행한다.
-      # Codex P1: 'pub cache repair'는 .pub-cache의 모든 hosted/git 패키지를
-      # 재설치하므로 stale/obsolete (private/unavailable git source 등) 패키지가
-      # 잔존하면 현재 lock과 무관해도 job이 fail. cache 자체를 폐기하면 stale
-      # 패키지가 문제될 여지를 차단하고, fresh pub get은 lock 기반이라 필요한
-      # 패키지만 받는다.
-      - name: Purge stale pub cache on partial restore
-        if: steps.pub_cache.outputs.cache-hit != 'true'
-        run: |
-          echo "Cache miss or partial restore — purging ~/.pub-cache to avoid stale packages"
-          rm -rf ~/.pub-cache
 
       - run: flutter pub get
 
