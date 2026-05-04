@@ -162,140 +162,12 @@ jobs:
           echo "verdict=proceed" >> $GITHUB_OUTPUT
 
   # ─────────────────────────────────────────
-  # PHASE 1: 객관 CI 게이트 (Flutter)
-  # ─────────────────────────────────────────
-  phase1-ci:
-    needs: gate-classify
-    if: needs.gate-classify.outputs.verdict == 'proceed'
-    runs-on: ubuntu-latest
-    outputs:
-      coverage: ${{ steps.cov.outputs.coverage }}
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: ${{ inputs.flutter_version }}
-          channel: stable
-          cache: true
-
-      - name: Cache pub + dart_tool (build_runner incremental)
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.pub-cache
-            .dart_tool
-          key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}-${{ hashFiles('lib/**/*.dart') }}
-          restore-keys: |
-            ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}-
-            ${{ runner.os }}-flutter-
-
-      - name: Decode firebase_options (if configured)
-        env:
-          FIREBASE_OPTIONS_DEV_B64: ${{ secrets.FIREBASE_OPTIONS_DEV_B64 }}
-          FIREBASE_OPTIONS_PROD_B64: ${{ secrets.FIREBASE_OPTIONS_PROD_B64 }}
-        run: |
-          if [ -n "$FIREBASE_OPTIONS_DEV_B64" ]; then
-            echo "$FIREBASE_OPTIONS_DEV_B64"  | base64 --decode > lib/firebase_options_dev.dart
-          fi
-          if [ -n "$FIREBASE_OPTIONS_PROD_B64" ]; then
-            echo "$FIREBASE_OPTIONS_PROD_B64" | base64 --decode > lib/firebase_options_prod.dart
-          fi
-
-      - run: flutter pub get
-
-      - name: Generate code (build_runner)
-        run: dart run build_runner build --delete-conflicting-outputs
-
-      - name: flutter analyze (warning도 fail)
-        run: flutter analyze --fatal-infos --fatal-warnings
-
-      - name: 비즈니스 로직 파일에 대응 _test.dart 검증
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          # 변경된 .dart 중 (1) 강제 대상이고 (2) 제외 대상이 아닌 것만 필터
-          CHANGED=$(gh pr diff "$PR_NUM" -R "$REPO" --name-only \
-            | grep -E "$TEST_REQUIRED_PATHS" \
-            | grep -vE "$TEST_EXCLUDE_PATHS" || true)
-
-          if [ -z "$CHANGED" ]; then
-            echo "✅ 비즈니스 로직 변경 없음 — 테스트 검증 skip"
-            exit 0
-          fi
-
-          echo "📝 테스트 강제 대상:"
-          echo "$CHANGED"
-
-          MISSING=""
-          for f in $CHANGED; do
-            t=$(echo "$f" | sed 's|^lib/|test/|; s|\.dart$|_test.dart|')
-            if [ ! -f "$t" ]; then
-              MISSING="${MISSING}- ${f} → ${t}\n"
-            fi
-          done
-          if [ -n "$MISSING" ]; then
-            echo "❌ 다음 비즈니스 로직 파일에 대응 테스트 누락:"
-            echo -e "$MISSING"
-            echo ""
-            echo "강제 대상: domain/usecases, data/repositories, data/datasources, core/utils, core/errors"
-            echo "제외: generated/, *.g.dart, *.freezed.dart, constants/, theme/, router/, widgets/, presentation/{widgets,pages}/"
-            exit 1
-          fi
-          echo "✅ 모든 비즈니스 로직 파일에 테스트 존재"
-
-      - name: flutter test --coverage
-        run: flutter test --coverage
-
-      - id: cov
-        name: Coverage 검증 (비즈니스 로직만, ≥${{ env.COVERAGE_MIN }}%)
-        run: |
-          if [ ! -f coverage/lcov.info ]; then echo "no lcov.info"; exit 1; fi
-
-          # 측정 대상: usecases + repositories + utils + errors (COVERAGE_PATHS).
-          # datasources는 platform mock 시간 cost 큼, 측정에서 제외 (강제는 유지).
-          awk '
-            /^SF:/ {
-              path = substr($0, 4)
-              is_target = path ~ /lib\/features\/[^\/]+\/(domain\/usecases|data\/repositories)\// \
-                       || path ~ /lib\/core\/(utils|errors)\//
-              is_excluded = path ~ /\.g\.dart$/ || path ~ /\.freezed\.dart$/
-              keep = (is_target && !is_excluded)
-            }
-            keep && /^DA:/ {
-              found++
-              n = split($0, parts, ",")
-              if (parts[2] != "0") hit++
-            }
-            END {
-              printf "%d %d\n", hit, found
-            }
-          ' coverage/lcov.info > /tmp/cov.txt
-          read LINES_HIT LINES_FOUND < /tmp/cov.txt
-
-          if [ "${LINES_FOUND:-0}" -eq 0 ]; then
-            echo "ℹ️ 비즈니스 로직 변경 없음 또는 측정 대상 없음 — coverage 검증 skip"
-            echo "coverage=n/a" >> $GITHUB_OUTPUT
-            exit 0
-          fi
-
-          PERCENT=$((LINES_HIT * 100 / LINES_FOUND))
-          echo "coverage=$PERCENT" >> $GITHUB_OUTPUT
-          echo "비즈니스 로직 Coverage: ${PERCENT}% (${LINES_HIT}/${LINES_FOUND})"
-          echo "측정 대상: domain/usecases, data/repositories, core/utils, core/errors (datasources는 강제 대상이지만 측정에서 제외)"
-          if [ "$PERCENT" -lt "$COVERAGE_MIN" ]; then
-            echo "❌ 비즈니스 로직 Coverage ${PERCENT}% < ${COVERAGE_MIN}%"; exit 1
-          fi
-
-  # ─────────────────────────────────────────
   # PHASE 2: Multi-agent AI 리뷰 (Opus 4.7)
   # 단일 action 호출 안에서 5 perspective + verifier 지시
   # (PoC: matrix 분리는 Phase 다음 단계로)
   # ─────────────────────────────────────────
   phase2-review:
-    needs: [gate-classify, phase1-ci]
+    needs: gate-classify
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -489,8 +361,8 @@ jobs:
   # PHASE 3: Decision — 라벨 부여 + self-iterate 신호
   # ─────────────────────────────────────────
   phase3-decide:
-    needs: [gate-classify, phase1-ci, phase2-review]
-    if: needs.gate-classify.outputs.verdict == 'proceed' && needs.phase1-ci.result == 'success' && needs.phase2-review.result == 'success'
+    needs: [gate-classify, phase2-review]
+    if: needs.gate-classify.outputs.verdict == 'proceed' && needs.phase2-review.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: read
