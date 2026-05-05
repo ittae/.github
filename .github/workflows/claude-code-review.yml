@@ -20,7 +20,7 @@ on:
         type: string
       flutter_version:
         type: string
-        default: '3.41.7'
+        default: '3.41.9'
       model:
         type: string
         default: 'claude-opus-4-7'

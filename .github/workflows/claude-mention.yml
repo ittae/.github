@@ -23,7 +23,7 @@ on:
     inputs:
       flutter_version:
         type: string
-        default: '3.41.7'
+        default: '3.41.9'
 
 jobs:
   claude-response:
