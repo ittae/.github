@@ -26,7 +26,9 @@ on:
         default: 'claude-opus-4-7'
       pr_size_limit:
         type: number
-        default: 500
+        # 1인 개발자 PR이 자주 500+ 라인 (i18n 마이그레이션, refactor 등). 임계 완화.
+        # 이 임계 초과 시 gate-classify가 'too-large' verdict를 내리고 phase2-review 스킵.
+        default: 1500
       coverage_min:
         type: number
         default: 70
