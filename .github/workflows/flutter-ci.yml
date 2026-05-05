@@ -50,12 +50,6 @@ on:
       test_exclude_paths:
         type: string
         default: '^lib/main\.dart$|^lib/generated/|\.g\.dart$|\.freezed\.dart$|^lib/core/(constants|theme|router|widgets|l10n)/|/presentation/(widgets|pages)/'
-      enforce_test_required:
-        # 비즈니스 로직 파일(domain/usecases, data/repositories 등) 변경 시 대응
-        # _test.dart 강제 검증 step 활성화 여부. 1인 점진 개발에서 부담스러우면 false.
-        # coverage_min은 별개로 유지 — 이 옵션은 '신규 파일에 즉시 test 강제' 정책만.
-        type: boolean
-        default: true
     outputs:
       coverage:
         description: 'Business-logic line coverage percentage (or "n/a" if no measurable target)'
@@ -118,7 +112,6 @@ jobs:
         run: flutter analyze --fatal-infos --fatal-warnings
 
       - name: 비즈니스 로직 파일에 대응 _test.dart 검증
-        if: inputs.enforce_test_required
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
