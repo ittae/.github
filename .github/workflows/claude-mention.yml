@@ -60,15 +60,15 @@ jobs:
           channel: stable
           cache: true
 
-      - name: Cache pub + dart_tool
+      # ~/.pub-cache는 subosito/flutter-action(cache: true)에 위임. 두 cache step이
+      # 같은 경로를 다른 key로 동시에 cache/restore하면 한쪽이 다른쪽의 archive를
+      # 덮어쓰는 충돌이 발생함 (flutter-ci.yml과 동일 패턴 적용).
+      # .dart_tool은 SDK 의존성이 강해 cache key에 flutter_version을 포함시킨다.
+      - name: Cache .dart_tool (build_runner incremental output)
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.pub-cache
-            .dart_tool
-          key: ${{ runner.os }}-flutter-${{ hashFiles('pubspec.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-flutter-
+          path: .dart_tool
+          key: ${{ runner.os }}-dart-tool-${{ inputs.flutter_version }}-${{ hashFiles('pubspec.lock') }}
 
       - run: flutter pub get
 
