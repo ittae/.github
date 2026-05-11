@@ -1,0 +1,74 @@
+name: Agent Task (Why → How → What)
+description: AI 에이전트(또는 사람)가 처리할 작업. Golden Circle에 따라 Why부터 명시한다.
+title: "[Agent Task] "
+# NOTE: 라벨은 의도적으로 비워둠. org-wide form이 상속되는 repo에 동일한
+# 라벨이 미리 존재하지 않으면 GitHub은 자동으로 라벨을 생성/부여하지 않는다.
+# triage가 필요한 repo는 각자 라벨을 프로비저닝하고 자기 ISSUE_TEMPLATE에서 덮어쓴다.
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## 이때(ittae) 조직의 Why
+        > **Vision:** 사람들의 계획이 현실이 되도록 돕는 것입니다.
+        > **Mission:** 어제를 소중히 여기고, 내일을 꿈꾸며, 오늘을 살아갈 수 있도록 돕는 것입니다.
+
+        이 이슈는 위 Vision을 *강화*해야 한다. 강화하지 못하면 만들지 않는다.
+        에이전트는 작업을 시작하기 전 첫 코멘트로 "이 이슈가 Vision을 어떻게 강화하는가"를 1문장으로 재진술한다.
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why — 왜 해야 하는가
+      description: |
+        이 작업이 우리 Vision("사람들의 계획이 현실이 되도록 돕는 것입니다")을 어떻게 강화하는가?
+        "원래 그래야 해서"는 Why가 아니다. 사용자에게 어떤 변화가 생기는지 1-3 문장으로 적는다.
+      placeholder: |
+        예) 알림을 놓치면 사용자의 "계획"이 "현실"로 이어지지 않는다. 알림 신뢰성이 깨지면 앱의 핵심 약속이 깨진다.
+    validations:
+      required: true
+
+  - type: textarea
+    id: how
+    attributes:
+      label: How — 어떻게 접근하는가 (원칙 수준)
+      description: |
+        코드 라인이 아니라 **결정 기준**을 적는다. Clean Architecture, Riverpod 3-tier 등 어떤 원칙을 따를 것인가.
+        선택 사항이지만, 빈 칸이면 에이전트가 첫 코멘트에서 채워야 한다.
+      placeholder: |
+        예) 알림 발송 책임을 Domain UseCase에 둔다. Repository는 pass-through. AsyncValue로 에러 처리.
+    validations:
+      required: false
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What — 구체적으로 무엇을 바꾸는가
+      description: |
+        파일·PR·기능 단위로 구체적인 산출물을 적는다.
+      placeholder: |
+        예) features/notification/domain/usecases/SendReminderUseCase.dart 추가, NotificationRepository.send() 시그니처 변경.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance — 무엇이 충족되면 완료인가
+      description: 테스트 가능한 조건. 가능하면 체크리스트로.
+      placeholder: |
+        - [ ] dev 환경에서 알림이 5초 안에 도착
+        - [ ] flutter test 통과
+        - [ ] Why-dilution check 통과 (다른 영역을 희석하지 않음)
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: 작성자 확인
+      options:
+        - label: 이 이슈는 우리 Vision을 강화한다. (강화하지 못하면 만들지 않는다)
+          required: true
+        - label: Why 칸을 *결과*가 아닌 *변화*로 적었다.
+          required: true
