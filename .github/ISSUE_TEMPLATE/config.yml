@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 이때(ittae) 조직 Why
+    url: https://github.com/ittae/.github/blob/main/profile/README.md
+    about: 이슈를 만들기 전에 우리 Vision/Mission을 먼저 읽어주세요.
