@@ -1,14 +1,17 @@
 name: Agent Task (Why → How → What)
 description: AI 에이전트(또는 사람)가 처리할 작업. Golden Circle에 따라 Why부터 명시한다.
 title: "[Agent Task] "
-labels: ["agent-task"]
+# NOTE: 라벨은 의도적으로 비워둠. org-wide form이 상속되는 repo에 동일한
+# 라벨이 미리 존재하지 않으면 GitHub은 자동으로 라벨을 생성/부여하지 않는다.
+# triage가 필요한 repo는 각자 라벨을 프로비저닝하고 자기 ISSUE_TEMPLATE에서 덮어쓴다.
+labels: []
 body:
   - type: markdown
     attributes:
       value: |
         ## 이때(ittae) 조직의 Why
-        > **Vision:** 사람들의 계획이 현실이 되도록 돕는다.
-        > **Mission:** 어제를 소중히 여기고, 내일을 꿈꾸며, 오늘을 살아갈 수 있도록 돕는다.
+        > **Vision:** 사람들의 계획이 현실이 되도록 돕는 것입니다.
+        > **Mission:** 어제를 소중히 여기고, 내일을 꿈꾸며, 오늘을 살아갈 수 있도록 돕는 것입니다.
 
         이 이슈는 위 Vision을 *강화*해야 한다. 강화하지 못하면 만들지 않는다.
         에이전트는 작업을 시작하기 전 첫 코멘트로 "이 이슈가 Vision을 어떻게 강화하는가"를 1문장으로 재진술한다.
@@ -18,7 +21,7 @@ body:
     attributes:
       label: Why — 왜 해야 하는가
       description: |
-        이 작업이 우리 Vision("사람들의 계획이 현실이 되도록 돕는다")을 어떻게 강화하는가?
+        이 작업이 우리 Vision("사람들의 계획이 현실이 되도록 돕는 것입니다")을 어떻게 강화하는가?
         "원래 그래야 해서"는 Why가 아니다. 사용자에게 어떤 변화가 생기는지 1-3 문장으로 적는다.
       placeholder: |
         예) 알림을 놓치면 사용자의 "계획"이 "현실"로 이어지지 않는다. 알림 신뢰성이 깨지면 앱의 핵심 약속이 깨진다.
