@@ -5,6 +5,12 @@ name: Flutter CI (Reusable)
 # production Flutter 앱은 secret 디코딩/E2E/build matrix 등 더 풍부한 CI를 자체 워크플로우로 갖고 있어
 # 중복이 발생했다. 이 reusable은 통용 객관 CI만 담당하고, AI 리뷰는 claude-code-review.yml이 별도로 처리한다.
 #
+# 샤딩 (2026-05-13 도입):
+#   `flutter test --coverage`가 PR 1회당 ~9분, 전체 CI 시간의 67%를 차지하던 병목.
+#   `flutter test --total-shards/--shard-index`로 N개 샤드를 matrix 병렬화하고 lcov를 머지한다.
+#   GitHub Actions 사용 분(minutes)은 늘지만 wall-clock(사용자 PR 피드백 시간)은 N배 가깝게 단축.
+#   샤드 수는 `test_shards` input으로 조정. analyze / 테스트 누락 검증은 shard 0에서만 실행.
+#
 # Caller exemplar (Flutter PR Checks):
 #   on:
 #     pull_request:
@@ -50,10 +56,15 @@ on:
       test_exclude_paths:
         type: string
         default: '^lib/main\.dart$|^lib/generated/|\.g\.dart$|\.freezed\.dart$|^lib/core/(constants|theme|router|widgets|l10n)/|/presentation/(widgets|pages)/'
+      # 테스트 샤드 매트릭스. 변경 시 reusable caller가 input으로 오버라이드.
+      # 형태는 fromJSON 가능한 정수 배열 JSON 문자열.
+      test_shards_json:
+        type: string
+        default: '[0,1,2,3]'
     outputs:
       coverage:
         description: 'Business-logic line coverage percentage (or "n/a" if no measurable target)'
-        value: ${{ jobs.flutter-ci.outputs.coverage }}
+        value: ${{ jobs.coverage.outputs.coverage }}
 
 env:
   PR_NUM: ${{ github.event.pull_request.number }}
@@ -63,10 +74,18 @@ env:
   TEST_EXCLUDE_PATHS: ${{ inputs.test_exclude_paths }}
 
 jobs:
+  # ---------------------------------------------------------------
+  # 테스트 샤드 매트릭스. shard 0이 analyze / 테스트 누락 검증을 겸한다.
+  # 각 샤드는 자기 몫의 lcov만 생성하고 coverage job에서 머지.
+  # ---------------------------------------------------------------
   flutter-ci:
+    name: ci shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
-    outputs:
-      coverage: ${{ steps.cov.outputs.coverage }}
+    strategy:
+      # 한 샤드 실패해도 다른 샤드는 계속 — 전체 그림을 보고 fix 하기 위함.
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(inputs.test_shards_json) }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -109,9 +128,11 @@ jobs:
         run: dart run build_runner build --delete-conflicting-outputs
 
       - name: flutter analyze (warning도 fail)
+        if: matrix.shard == 0
         run: flutter analyze --fatal-infos --fatal-warnings
 
       - name: 비즈니스 로직 파일에 대응 _test.dart 검증
+        if: matrix.shard == 0
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -145,8 +166,74 @@ jobs:
           fi
           echo "✅ 모든 비즈니스 로직 파일에 테스트 존재"
 
-      - name: flutter test --coverage
-        run: flutter test --coverage
+      - name: flutter test --coverage (shard ${{ matrix.shard }})
+        env:
+          TOTAL_SHARDS: ${{ strategy.job-total }}
+          SHARD_INDEX: ${{ matrix.shard }}
+        run: |
+          # `flutter test` 기본 대상은 `test/` 디렉터리(integration_test 제외).
+          # --total-shards / --shard-index로 dart test의 sharding을 활용.
+          flutter test --coverage \
+            --total-shards="$TOTAL_SHARDS" \
+            --shard-index="$SHARD_INDEX" \
+            test/
+
+      - name: Stage shard lcov
+        if: always() && hashFiles('coverage/lcov.info') != ''
+        run: |
+          mkdir -p coverage-shard
+          mv coverage/lcov.info "coverage-shard/lcov-${{ matrix.shard }}.info"
+
+      - name: Upload shard lcov
+        if: always() && hashFiles('coverage-shard/lcov-*.info') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: lcov-shard-${{ matrix.shard }}
+          path: coverage-shard/lcov-${{ matrix.shard }}.info
+          retention-days: 1
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------
+  # 모든 샤드 lcov를 머지해 비즈니스 로직 coverage 게이트를 검증.
+  # flutter-ci가 실패해도 coverage 결과 자체는 가능한 만큼 산출 시도.
+  # ---------------------------------------------------------------
+  coverage:
+    name: coverage gate
+    needs: flutter-ci
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    outputs:
+      coverage: ${{ steps.cov.outputs.coverage }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Download all shard lcov artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: lcov-shard-*
+          path: coverage-shards
+          merge-multiple: true
+
+      - name: Install lcov
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends lcov
+
+      - name: Merge lcov
+        run: |
+          mkdir -p coverage
+          # `-a`로 입력 lcov를 누적 add. 동일 source의 DA 라인은 lcov가 hit 합산 처리.
+          ARGS=""
+          for f in coverage-shards/lcov-*.info; do
+            [ -f "$f" ] || continue
+            ARGS="$ARGS -a $f"
+          done
+          if [ -z "$ARGS" ]; then
+            echo "❌ 어떤 샤드도 lcov를 생성하지 못했습니다."
+            exit 1
+          fi
+          lcov $ARGS -o coverage/lcov.info
+          echo "Merged $(echo "$ARGS" | grep -o '\-a' | wc -l) shard lcov files"
 
       - id: cov
         name: Coverage 검증 (비즈니스 로직만, ≥${{ env.COVERAGE_MIN }}%)
