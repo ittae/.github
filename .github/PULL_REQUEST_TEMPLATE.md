@@ -10,7 +10,8 @@
 
 ## 🐙 Related Issue
 <!-- 연관 이슈 번호 또는 링크 (예: close #123) -->
-close 
+<!-- 이슈가 있을 때만 아래 예시를 실제 번호로 바꾸세요. -->
+<!-- close #123 -->
 
 ## Real Behavior Proof (필수)
 
@@ -37,7 +38,6 @@ close
 
 ## Commit / PR Title Convention
 
-- ❌ `feat:` 사용 금지
-- ✅ `feature: <한국어 설명>` 사용
-  - 예: `feature: 로그인 화면 에러 메시지 다국어 처리`
-- 그 외 prefix는 conventional commits를 따른다: `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`
+- ✅ `feat: <한국어 설명>` 사용
+  - 예: `feat: 로그인 화면 에러 메시지 다국어 처리`
+- Conventional Commits 타입을 따른다: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`, `build`, `style`, `revert`
