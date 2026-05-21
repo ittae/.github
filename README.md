@@ -33,3 +33,7 @@
 사람마다 근육량이 다르듯 집중력도 다르겠지만, 집중해서 무엇이든 해보겠다는 자세를 가지길 바라고 있어요.
 
 > Carpe diem!
+
+## Shared Tooling
+
+- Hermes PR review gate source-of-truth: [`tools/review_followup/README.md`](tools/review_followup/README.md)

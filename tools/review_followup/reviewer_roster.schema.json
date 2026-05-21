@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ittae/.github/tools/review_followup/reviewer_roster.schema.json",
+  "title": "review_followup reviewer roster",
+  "type": "object",
+  "required": ["reviewers"],
+  "additionalProperties": false,
+  "properties": {
+    "reviewers": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["display_name", "role"],
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "role": {
+            "type": "string",
+            "enum": ["required", "supplementary"]
+          },
+          "availability": {
+            "type": "string",
+            "enum": ["active", "inactive"]
+          },
+          "legacy_names": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "signal_source": {
+            "oneOf": [
+              {
+                "type": "string",
+                "enum": ["multica", "github-review"]
+              },
+              {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "enum": ["multica", "github-review"]
+                }
+              }
+            ]
+          },
+          "agent_ids": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "github_logins": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "excluded_when_worker": {
+            "type": "boolean"
+          }
+        }
+      }
+    }
+  }
+}
