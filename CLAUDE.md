@@ -1,6 +1,6 @@
-# ittae AI 코딩/리뷰 지침
+# ittae Claude Code 지침
 
-이 파일은 GitHub Copilot 및 GitHub instruction 호환 도구가 ittae 조직의 코딩/PR 리뷰에서 따라야 할 언어/리뷰 정책입니다. 기준 정책은 `.github/instructions/ai-pr-review-language.instructions.md`와 동일하게 유지합니다.
+이 파일은 Claude Code 계열 도구가 ittae 조직의 코딩/PR 리뷰에서 따라야 할 언어/리뷰 정책입니다. 기준 정책은 `.github/instructions/ai-pr-review-language.instructions.md`와 동일하게 유지합니다.
 
 ## 언어 정책
 
