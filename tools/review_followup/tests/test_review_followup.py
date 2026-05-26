@@ -1032,5 +1032,158 @@ class ReviewFollowupNotificationTest(unittest.TestCase):
         self.assertNotIn("autoMergeRequest", follow_up["approval"]["reasons"])
 
 
+class ReviewFollowupLinkEstablishmentTest(unittest.TestCase):
+    """ITT-238: PR title/body metadata edits that newly establish a Multica link."""
+
+    def setUp(self) -> None:
+        self.issue = {
+            "id": "issue-232",
+            "identifier": "ITT-232",
+            "title": "docs: document Flutter SDK prerequisite",
+            "status": "in_review",
+            "priority": "medium",
+            "assignee_type": "agent",
+            "assignee_id": CLAUDE_ID,
+        }
+        # PR #31-like: README-only docs change, CLEAN merge state, no reviews yet.
+        self.pr_url = "https://github.com/ittae/flutter_boilerplate/pull/31"
+        self.head_sha = "5fb0c0d1e2a3b4c5d6e7f8091a2b3c4d5e6f7081"
+
+    def build_follow_up(self, comments, checks=None):
+        return review_followup.build_follow_up_summary(
+            comments=comments,
+            blockers=[],
+            checks=checks or [],
+            threads=[],
+            required_reviewers=review_followup.DEFAULT_REQUIRED_REVIEWERS,
+            supplementary_reviewers=review_followup.DEFAULT_SUPPLEMENTARY_REVIEWERS,
+            pr=ready_pr(head_sha=self.head_sha),
+            current_head_sha=self.head_sha,
+            default_base_ref="main",
+        )
+
+    def build_apply_plan(self, comments, follow_up):
+        triage = review_followup.extract_review_triage(
+            review_followup.filter_review_comments(
+                comments,
+                set(follow_up["gate"].get("excluded_reviewer_keys") or []),
+                review_followup.DEFAULT_REVIEWER_ROSTER,
+            ),
+            review_followup.DEFAULT_REVIEWER_ROSTER,
+        )
+        return review_followup.build_apply_plan(triage)
+
+    def build_link_notification(
+        self,
+        comments,
+        issue_comments=None,
+        checks=None,
+        event_name="pull_request",
+        event_action="edited",
+        review_id="edit-1",
+    ):
+        follow_up = self.build_follow_up(comments, checks=checks)
+        apply_plan = self.build_apply_plan(comments, follow_up)
+        return review_followup.build_link_establishment_notification(
+            issue=self.issue,
+            comments=issue_comments if issue_comments is not None else comments,
+            pr_url=self.pr_url,
+            head_sha=self.head_sha,
+            follow_up=follow_up,
+            apply_plan=apply_plan,
+            pr=ready_pr(head_sha=self.head_sha),
+            checks=checks or [],
+            reviewer_roster=review_followup.DEFAULT_REVIEWER_ROSTER,
+            event_name=event_name,
+            event_action=event_action,
+            review_author=None,
+            comment_author=None,
+            review_state=None,
+            review_id=review_id,
+            comment_id=None,
+        )
+
+    def test_metadata_edit_event_detection(self):
+        self.assertTrue(review_followup.is_pr_metadata_edit_event("pull_request", "edited"))
+        self.assertTrue(review_followup.is_pr_metadata_edit_event("pull_request", "renamed"))
+        self.assertTrue(review_followup.is_pr_metadata_edit_event("pull_request_target", "edited"))
+        self.assertFalse(review_followup.is_pr_metadata_edit_event("pull_request", "synchronize"))
+        self.assertFalse(review_followup.is_pr_metadata_edit_event("pull_request_review", "submitted"))
+        self.assertFalse(review_followup.is_pr_metadata_edit_event("issue_comment", "created"))
+
+    def test_pr31_metadata_edit_posts_visible_link_comment(self):
+        # Mirrors PR #31: docs-only PR, no reviews, title/body edited to add ITT-232.
+        notification = self.build_link_notification([], checks=[])
+
+        self.assertTrue(notification["should_post"])
+        self.assertEqual(notification["mode"], "top_level")
+        body = notification["comment_body"]
+        self.assertIn("[hermes:pr-link-established]", body)
+        self.assertIn(self.pr_url, body)
+        self.assertIn(self.head_sha, body)
+        self.assertIn("Linked issue: [ITT-232]", body)
+        self.assertIn("CI/check state:", body)
+        self.assertIn("반영 / 보류 / 기각 / 미처리", body)
+        # No prior gate comment on the issue, so a Hermes synthesis verdict is still needed.
+        self.assertTrue(notification["synthesis_needed"])
+        self.assertIn("Hermes 종합 의견: 필요", body)
+        self.assertIn("hermes:pr-link-established-meta", body)
+
+    def test_non_metadata_edit_event_is_skipped(self):
+        notification = self.build_link_notification(
+            [],
+            event_name="pull_request_review",
+            event_action="submitted",
+        )
+        self.assertFalse(notification["should_post"])
+        self.assertEqual(notification["suppression_reason"], "not-a-metadata-edit-event")
+        self.assertIsNone(notification["comment_body"])
+
+    def test_duplicate_metadata_edit_is_suppressed(self):
+        first = self.build_link_notification([], checks=[], review_id="edit-1")
+        existing = [
+            issue_comment(
+                "link-1",
+                first["comment_body"],
+                "2026-05-26T14:30:00Z",
+            )
+        ]
+        # A second, identical edited delivery (different event id, same snapshot) must not re-post.
+        repeated = self.build_link_notification(
+            [],
+            issue_comments=existing,
+            checks=[],
+            review_id="edit-2",
+        )
+        self.assertFalse(repeated["should_post"])
+        self.assertEqual(repeated["suppression_reason"], "duplicate-link-established-snapshot")
+
+    def test_dispositions_summarize_review_feedback(self):
+        reviewer_comments = [
+            reviewer_comment(
+                CLAUDE_ID,
+                "## must-fix\n- guard the null user before dereferencing",
+            ),
+            reviewer_comment(
+                CODEX_ID,
+                "## should-fix\n- rename helper for clarity\n\n## non-actionable\n- nice tests",
+            ),
+        ]
+        follow_up = self.build_follow_up(reviewer_comments)
+        apply_plan = self.build_apply_plan(reviewer_comments, follow_up)
+        dispositions = review_followup.summarize_review_dispositions(apply_plan, follow_up)
+        counts = dispositions["counts"]
+        self.assertEqual(counts["applied"], 1)
+        self.assertEqual(counts["held"], 1)
+        self.assertEqual(counts["rejected"], 1)
+        self.assertEqual(counts["unprocessed"], 0)
+
+    def test_synthesis_not_needed_when_gate_comment_exists(self):
+        existing_gate = [gate_comment("gate-prior", self.head_sha, "2026-05-26T14:00:00Z")]
+        notification = self.build_link_notification([], issue_comments=existing_gate, checks=[])
+        self.assertFalse(notification["synthesis_needed"])
+        self.assertIn("Hermes 종합 의견: 이미 존재", notification["comment_body"])
+
+
 if __name__ == "__main__":
     unittest.main()

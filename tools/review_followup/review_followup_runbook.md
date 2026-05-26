@@ -176,6 +176,13 @@ hermes webhook subscribe github-pr-followup \
    - PR body footer: `Related Multica: ITT-123`
    - Optional deep link: `mention://issue/<uuid>`
 
+## PR Metadata Edit Link Correction
+
+1. `pull_request` events with action `edited` or `renamed` change the PR title/body without a new commit or review. When such an edit adds an `ITT-123` reference, the standard review-gate signal collection has nothing new to react to, so the link would otherwise go unrecorded.
+2. For these events the gate run emits a separate `link_established_notification` (marker `[hermes:pr-link-established]`). It posts a visible top-level comment on the linked issue recording the PR URL, head SHA, CI/check state, reviewer roster status, the 반영/보류/기각/미처리 review-disposition summary, and whether a Hermes synthesis verdict is still needed.
+3. The link comment is deduped by a semantic snapshot key (PR + head SHA + CI state + verdict + disposition counts + reviewer roster) and the webhook event key, so repeated identical `edited` deliveries do not re-post. It is posted independently of the gate `notification.should_post` decision.
+4. This path never edits PR title/body, merges, or changes GitHub state. It only records the corrected link on the Multica side.
+
 ## Review Gate Strategy
 
 1. Treat the GitHub webhook as the wake-up signal, not as the final decision.

@@ -22,6 +22,7 @@ ISSUE_MENTION_RE = re.compile(r"mention://issue/([0-9a-fA-F-]{36})")
 PLACEHOLDER_VALUE_RE = re.compile(r"^\{[^{}]+\}$")
 HERMES_GATE_META_RE = re.compile(r"<!--\s*hermes:pr-review-gate-meta\s*(\{.*?\})\s*-->", re.DOTALL)
 HERMES_IGNORED_APPROVAL_META_RE = re.compile(r"<!--\s*hermes:agent-approval-ignored-meta\s*(\{.*?\})\s*-->", re.DOTALL)
+HERMES_LINK_ESTABLISHED_META_RE = re.compile(r"<!--\s*hermes:pr-link-established-meta\s*(\{.*?\})\s*-->", re.DOTALL)
 AI_REVIEW_META_RE = re.compile(r"<!--\s*ai-review-meta\s*(\{.*?\})\s*-->", re.DOTALL)
 VISIBLE_GATE_VALUE_PATTERNS = {
     "pr_url": re.compile(r"^- PR:\s*(https://github\.com/\S+)$", re.MULTILINE),
@@ -35,11 +36,23 @@ HERMES_GATE_MARKER = "[hermes:pr-review-gate]"
 HERMES_APPROVAL_MARKER = "[hermes:approval-needed]"
 HERMES_APPROVAL_MIRRORED_MARKER = "[hermes:approval-mirrored]"
 HERMES_AGENT_APPROVAL_IGNORED_MARKER = "[hermes:agent-approval-ignored]"
+HERMES_LINK_ESTABLISHED_MARKER = "[hermes:pr-link-established]"
 MERGE_STATE_GREEN = {"CLEAN", "HAS_HOOKS", "MERGEABLE"}
 MERGE_STATE_APPROVAL_READY = {"CLEAN", "HAS_HOOKS"}
 MERGE_STATE_PENDING = {"BEHIND", "DRAFT", "UNKNOWN", "UNSTABLE"}
 MERGE_STATE_FAILING = {"BLOCKED", "DIRTY"}
 NOTIFIABLE_STATES = {"collecting_reviews", "approval_needed", "needs_agent_fix", "ready_for_approved_merge", "blocked"}
+# pull_request.edited / renamed style metadata edits that can newly establish or confirm a Multica link
+# without producing a new commit or review event.
+PR_METADATA_EDIT_EVENTS = {"pull_request", "pull_request_target"}
+PR_METADATA_EDIT_ACTIONS = {"edited", "renamed"}
+LINK_DISPOSITION_BUCKETS = ("applied", "held", "rejected", "unprocessed")
+LINK_DISPOSITION_LABELS = {
+    "applied": "반영(적용 예정)",
+    "held": "보류(조건부/추후)",
+    "rejected": "기각(코드 변경 불필요)",
+    "unprocessed": "미처리(open review thread)",
+}
 
 DEFAULT_REVIEWER_PROFILES = [
     {
@@ -1868,6 +1881,336 @@ def same_gate_semantics(existing: dict[str, Any], state: str, ci_state: str, ver
             or existing_reasons == sorted(approval_reasons)
         )
     )
+
+
+def is_pr_metadata_edit_event(event_name: str | None, event_action: str | None) -> bool:
+    """True for pull_request.edited / renamed style metadata edits.
+
+    These events change PR title/body (which can newly add a Multica ITT-123 link)
+    without producing a new commit, review, or synchronize event, so the standard
+    review-gate signal collection alone never surfaces them.
+    """
+    name = (clean_template_value(event_name) or "").strip().lower()
+    action = (clean_template_value(event_action) or "").strip().lower()
+    return name in PR_METADATA_EDIT_EVENTS and action in PR_METADATA_EDIT_ACTIONS
+
+
+def summarize_review_dispositions(
+    apply_plan: list[dict[str, Any]],
+    follow_up: dict[str, Any],
+) -> dict[str, Any]:
+    """Re-collect existing review feedback into 반영 / 보류 / 기각 / 미처리 buckets."""
+    buckets: dict[str, list[str]] = {bucket: [] for bucket in LINK_DISPOSITION_BUCKETS}
+    for entry in apply_plan or []:
+        action = entry.get("action")
+        item = clean_template_value(str(entry.get("item") or "")) or ""
+        if not item:
+            continue
+        if action == "apply-now":
+            buckets["applied"].append(item)
+        elif action in {"apply-if-low-risk", "create-follow-up-issue", "needs-decision"}:
+            buckets["held"].append(item)
+        elif action == "no-code-change":
+            buckets["rejected"].append(item)
+        else:
+            buckets["unprocessed"].append(item)
+    open_threads = int(follow_up.get("actionable_thread_count") or 0)
+    counts = {bucket: len(items) for bucket, items in buckets.items()}
+    counts["unprocessed"] += open_threads
+    return {
+        "buckets": buckets,
+        "counts": counts,
+        "open_threads": open_threads,
+        "total": sum(counts.values()),
+    }
+
+
+def hermes_synthesis_present(comments: list[dict[str, Any]], pr_url: str | None) -> bool:
+    """Whether the linked issue already carries a Hermes gate/synthesis verdict for this PR."""
+    normalized_pr = canonical_pr_url(pr_url)
+    for item in gate_metadata_comments(comments):
+        if not normalized_pr or item.get("pr_url") in {None, normalized_pr}:
+            return True
+    return False
+
+
+def build_link_established_dedupe_key(
+    pr_url: str | None,
+    head_sha: str | None,
+    follow_up: dict[str, Any],
+    ci_state: str,
+    dispositions: dict[str, Any],
+    synthesis_needed: bool,
+    reviewer_statuses: list[dict[str, Any]],
+) -> str:
+    canonical = canonical_pr_url(pr_url) or "unknown-pr"
+    parsed = parse_pr_url(canonical)
+    repo = parsed[0] if parsed else canonical
+    number = str(parsed[1]) if parsed else "unknown"
+    normalized_head = clean_template_value(head_sha) or "unknown-head"
+    verdict = notification_verdict(follow_up)
+    reviewer_snapshot = [
+        {
+            "key": entry.get("key"),
+            "role": entry.get("role"),
+            "status": entry.get("status"),
+            "verdict": entry.get("normalized_verdict") or entry.get("verdict"),
+        }
+        for entry in reviewer_statuses
+    ]
+    payload = {
+        "pr_url": canonical,
+        "head_sha": normalized_head,
+        "state": follow_up.get("state"),
+        "ci_state": ci_state,
+        "verdict": verdict,
+        "synthesis_needed": bool(synthesis_needed),
+        "dispositions": dispositions.get("counts", {}),
+        "reviewers": reviewer_snapshot,
+    }
+    digest = hashlib.sha1(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:12]
+    return f"link:{repo}#{number}:sha:{normalized_head}:ci:{ci_state}:verdict:{verdict}:snap:{digest}"
+
+
+def render_link_established_metadata(payload: dict[str, Any]) -> str:
+    return (
+        "<!-- hermes:pr-link-established-meta "
+        + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + " -->"
+    )
+
+
+def extract_link_established_metadata(comment: dict[str, Any]) -> dict[str, Any] | None:
+    content = comment.get("content") or ""
+    if HERMES_LINK_ESTABLISHED_MARKER not in content:
+        return None
+    match = HERMES_LINK_ESTABLISHED_META_RE.search(content)
+    payload: dict[str, Any] = {}
+    if match:
+        try:
+            payload = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            payload = {}
+    payload["comment_id"] = comment.get("id")
+    payload["parent_id"] = comment.get("parent_id")
+    payload["created_at"] = comment.get("created_at")
+    return payload
+
+
+def link_established_metadata_comments(comments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    output: list[dict[str, Any]] = []
+    for comment in comments:
+        metadata = extract_link_established_metadata(comment)
+        if metadata:
+            output.append(metadata)
+    output.sort(key=lambda item: str(item.get("created_at") or ""))
+    return output
+
+
+def render_link_established_comment(
+    issue: dict[str, Any],
+    pr_url: str | None,
+    head_sha: str | None,
+    follow_up: dict[str, Any],
+    ci_state: str,
+    reviewer_statuses: list[dict[str, Any]],
+    dispositions: dict[str, Any],
+    synthesis_needed: bool,
+    dedupe_key: str,
+    event_name: str | None,
+    event_action: str | None,
+    review_author: str | None,
+    comment_author: str | None,
+    review_state: str | None,
+    event_key: str | None,
+    pr: dict[str, Any] | None = None,
+) -> str:
+    state = follow_up.get("state") or "unknown"
+    verdict = notification_verdict(follow_up)
+    normalized_head = clean_template_value(head_sha) or "unknown"
+    auto_merge_state, _auto_merge_note = github_auto_merge_state(pr)
+    reviewer_lines = [
+        format_reviewer_status(entry) for entry in reviewer_statuses if entry.get("role") != "optional"
+    ]
+    if not reviewer_lines:
+        reviewer_lines = ["- reviewer roster unavailable"]
+
+    counts = dispositions.get("counts", {})
+    buckets = dispositions.get("buckets", {})
+    disposition_lines: list[str] = []
+    for bucket in LINK_DISPOSITION_BUCKETS:
+        label = LINK_DISPOSITION_LABELS[bucket]
+        disposition_lines.append(f"- {label}: {counts.get(bucket, 0)}건")
+        for item in (buckets.get(bucket) or [])[:3]:
+            disposition_lines.append(f"  - {item}")
+    open_threads = int(dispositions.get("open_threads") or 0)
+    if open_threads:
+        disposition_lines.append(f"  - (열린 review thread {open_threads}건 포함)")
+
+    synthesis_label = "필요 (이 PR에 대한 Hermes 게이트 기록 없음)" if synthesis_needed else "이미 존재"
+
+    output = [
+        HERMES_LINK_ESTABLISHED_MARKER,
+        "PR title/body 변경으로 Multica 연결이 확인되어 리뷰 게이트를 재평가했습니다.",
+        "",
+        f"- event: {event_summary_line(event_name, event_action, review_author, comment_author, review_state)}",
+        f"- PR: {canonical_pr_url(pr_url) or 'missing'}",
+        f"- Linked issue: {issue_mention(issue)}",
+        f"- head SHA: `{normalized_head}`",
+        f"- CI/check state: `{ci_state}`",
+        f"- GitHub auto-merge: `{auto_merge_state}`",
+        f"- gate state: `{state}`",
+        f"- verdict: `{verdict}`",
+        f"- Hermes 종합 의견: {synthesis_label}",
+        f"- dedupe: `{dedupe_key}`",
+        "",
+        "Reviewer roster status:",
+        *reviewer_lines,
+        "",
+        "리뷰 의견 처리 현황 (반영 / 보류 / 기각 / 미처리):",
+        *disposition_lines,
+        "",
+        "Next action:",
+        f"- {next_action_text(follow_up)}",
+    ]
+    if synthesis_needed:
+        output.append(
+            "- 이 PR에는 아직 Hermes 종합 의견(리뷰 게이트 판단)이 없습니다. 새 리뷰 신호가 도착하거나 "
+            "사람이 `hermes approve ...`로 결정하면 종합 의견을 남길 수 있습니다."
+        )
+
+    metadata_payload = {
+        "version": 1,
+        "kind": "pr-link-established",
+        "issue_id": issue.get("id"),
+        "pr_url": canonical_pr_url(pr_url),
+        "head_sha": normalized_head,
+        "state": state,
+        "ci_state": ci_state,
+        "verdict": verdict,
+        "synthesis_needed": bool(synthesis_needed),
+        "dispositions": counts,
+        "dedupe_key": dedupe_key,
+        "event_key": event_key,
+    }
+    output.extend(["", render_link_established_metadata(metadata_payload)])
+    return "\n".join(output)
+
+
+def build_link_establishment_notification(
+    issue: dict[str, Any],
+    comments: list[dict[str, Any]],
+    pr_url: str | None,
+    head_sha: str | None,
+    follow_up: dict[str, Any],
+    apply_plan: list[dict[str, Any]],
+    pr: dict[str, Any] | None,
+    checks: list[dict[str, Any]],
+    reviewer_roster: ReviewerRoster | None = None,
+    event_name: str | None = None,
+    event_action: str | None = None,
+    review_author: str | None = None,
+    comment_author: str | None = None,
+    review_state: str | None = None,
+    review_id: str | None = None,
+    comment_id: str | None = None,
+) -> dict[str, Any]:
+    """Build a visible 'PR newly linked to Multica issue' notification for metadata edits.
+
+    Fires only for pull_request.edited / renamed style events so existing review-event
+    flows are unaffected. Deduped by a semantic snapshot key so repeated identical edit
+    deliveries do not re-post the same comment.
+    """
+    if not is_pr_metadata_edit_event(event_name, event_action):
+        return {
+            "should_post": False,
+            "mode": "skip",
+            "parent_comment_id": None,
+            "suppression_reason": "not-a-metadata-edit-event",
+            "dedupe_key": None,
+            "event_key": None,
+            "synthesis_needed": False,
+            "dispositions": {"counts": {}, "buckets": {}, "open_threads": 0, "total": 0},
+            "comment_body": None,
+        }
+
+    state = str(follow_up.get("state") or "")
+    if not canonical_pr_url(pr_url) or state not in NOTIFIABLE_STATES:
+        return {
+            "should_post": False,
+            "mode": "skip",
+            "parent_comment_id": None,
+            "suppression_reason": f"link-not-evaluable:{state or 'no-pr'}",
+            "dedupe_key": None,
+            "event_key": None,
+            "synthesis_needed": False,
+            "dispositions": {"counts": {}, "buckets": {}, "open_threads": 0, "total": 0},
+            "comment_body": None,
+        }
+
+    ci_state = summarize_ci_state(checks, follow_up, pr)
+    reviewer_statuses = reviewer_signal_statuses(follow_up, reviewer_roster)
+    dispositions = summarize_review_dispositions(apply_plan, follow_up)
+    synthesis_needed = not hermes_synthesis_present(comments, pr_url)
+    dedupe_key = build_link_established_dedupe_key(
+        pr_url,
+        head_sha,
+        follow_up,
+        ci_state,
+        dispositions,
+        synthesis_needed,
+        reviewer_statuses,
+    )
+    event_key = build_event_key(pr_url, head_sha, event_name, event_action, review_id, comment_id)
+
+    existing = link_established_metadata_comments(comments)
+    if any(item.get("dedupe_key") == dedupe_key for item in existing):
+        suppression_reason = "duplicate-link-established-snapshot"
+        should_post = False
+    elif event_key and any(item.get("event_key") == event_key for item in existing):
+        suppression_reason = "duplicate-event-key"
+        should_post = False
+    else:
+        suppression_reason = None
+        should_post = True
+
+    comment_body = None
+    if should_post:
+        comment_body = render_link_established_comment(
+            issue,
+            pr_url,
+            head_sha,
+            follow_up,
+            ci_state,
+            reviewer_statuses,
+            dispositions,
+            synthesis_needed,
+            dedupe_key,
+            event_name,
+            event_action,
+            review_author,
+            comment_author,
+            review_state,
+            event_key,
+            pr,
+        )
+
+    return {
+        "should_post": should_post,
+        "mode": "top_level" if should_post else "skip",
+        "parent_comment_id": None,
+        "suppression_reason": suppression_reason,
+        "dedupe_key": dedupe_key,
+        "event_key": event_key,
+        "ci_state": ci_state,
+        "verdict": notification_verdict(follow_up),
+        "synthesis_needed": synthesis_needed,
+        "dispositions": dispositions,
+        "reviewer_statuses": reviewer_statuses,
+        "comment_body": comment_body,
+    }
 
 
 def build_notification_policy(
@@ -5170,11 +5513,30 @@ def main() -> int:
         head_sha=context["current_head_sha"] or args.head_sha,
         follow_up=context["follow_up"],
     )
+    link_established_notification = build_link_establishment_notification(
+        issue=issue,
+        comments=context["comments"],
+        pr_url=context["pr_url"],
+        head_sha=context["current_head_sha"] or args.head_sha,
+        follow_up=context["follow_up"],
+        apply_plan=context["apply_plan"],
+        pr=context["pr"],
+        checks=context["checks"],
+        reviewer_roster=reviewer_roster,
+        event_name=args.event_name,
+        event_action=args.event_action,
+        review_author=args.review_author,
+        comment_author=args.comment_author,
+        review_state=args.review_state,
+        review_id=args.review_id,
+        comment_id=args.comment_id,
+    )
 
     if args.output == "json":
         post_errors: list[str] = []
         posted_gate_comment = False
         posted_ignored_approval_comment = False
+        posted_link_established_comment = False
         if args.post_comment:
             gate_post_error = post_comment_notification(str(issue_lookup_id), notification)
             if gate_post_error:
@@ -5187,6 +5549,12 @@ def main() -> int:
                 post_errors.append(ignored_post_error)
             else:
                 posted_ignored_approval_comment = bool(ignored_approval_notification.get("should_post"))
+
+            link_post_error = post_comment_notification(str(issue_lookup_id), link_established_notification)
+            if link_post_error:
+                post_errors.append(link_post_error)
+            else:
+                posted_link_established_comment = bool(link_established_notification.get("should_post"))
         post_error = "; ".join(post_errors) if post_errors else None
         print(
             json.dumps(
@@ -5205,12 +5573,15 @@ def main() -> int:
                     "apply_plan": context["apply_plan"],
                     "notification": notification,
                     "ignored_approval_notification": ignored_approval_notification,
+                    "link_established_notification": link_established_notification,
                     "required_reviewers": required_reviewers,
                     "supplementary_reviewers": supplementary_reviewers,
                     "reviewer_roster": reviewer_roster_payload(reviewer_roster),
-                    "posted_comment": args.post_comment and (posted_gate_comment or posted_ignored_approval_comment),
+                    "posted_comment": args.post_comment
+                    and (posted_gate_comment or posted_ignored_approval_comment or posted_link_established_comment),
                     "posted_gate_comment": posted_gate_comment,
                     "posted_ignored_approval_comment": posted_ignored_approval_comment,
+                    "posted_link_established_comment": posted_link_established_comment,
                     "post_error": post_error,
                     "report": context["report"],
                 },
@@ -5223,7 +5594,8 @@ def main() -> int:
         if args.post_comment:
             gate_post_error = post_comment_notification(str(issue_lookup_id), notification)
             ignored_post_error = post_comment_notification(str(issue_lookup_id), ignored_approval_notification)
-            post_errors = [error for error in [gate_post_error, ignored_post_error] if error]
+            link_post_error = post_comment_notification(str(issue_lookup_id), link_established_notification)
+            post_errors = [error for error in [gate_post_error, ignored_post_error, link_post_error] if error]
             if post_errors:
                 print(f"blocked/multica-comment: {'; '.join(post_errors)}", file=sys.stderr)
                 return 2
