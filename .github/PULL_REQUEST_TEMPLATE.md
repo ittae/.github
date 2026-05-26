@@ -25,6 +25,20 @@
 - 검증하지 않은 영역:
 - 증거가 부족하다면 그 이유:
 
+## AI Review Focus
+
+- 위험한 변경 영역:
+  - [ ] auth / permission / privacy
+  - [ ] payment / monetization
+  - [ ] data migration / storage
+  - [ ] dependency / build / CI
+  - [ ] broad refactor / behavior change
+  - [ ] user-facing copy / brand quality
+  - [ ] 없음
+
+- AI 리뷰어가 특히 봐야 할 점:
+- 테스트나 증거가 부족할 수 있는 영역:
+
 ## Human Decision Needed
 
 - [ ] 없음 — 에이전트 판단으로 진행 가능

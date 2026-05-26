@@ -17,3 +17,14 @@
 - 실제 영향이 작은 nitpick은 피합니다.
 - 작고 안전한 수정은 가능한 한 구체적인 suggestion block으로 제안합니다.
 - 사람 승인이 필요한 경우, 필요한 이유를 한국어로 명확히 씁니다.
+
+## AI Review guidelines
+
+- 모든 PR은 기본적으로 AI 리뷰 대상입니다.
+- auth, permissions, secrets, privacy, payments, user data 주변의 security regression을 높은 우선순위로 봅니다.
+- 동작이 바뀌는 변경에서 test가 없거나 약하면 지적합니다.
+- PR 설명에 드러나지 않은 risky behavior change를 지적합니다.
+- 런타임 동작에 영향을 주는 변경인데 `Real Behavior Proof`가 부족하면 지적합니다.
+- PR의 `AI Review Focus`가 위험 영역과 검증 부족 영역을 명확히 설명하는지 확인합니다.
+- user-facing copy, trust, brand quality에 영향을 주지 않는 단순 typo는 과도하게 우선순위를 높이지 않습니다.
+- 리뷰 코멘트는 가능한 한 file/line, risk level, suggested fix를 포함해 실행 가능하게 작성합니다.
