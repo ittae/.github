@@ -1158,6 +1158,70 @@ class ReviewFollowupLinkEstablishmentTest(unittest.TestCase):
         self.assertFalse(repeated["should_post"])
         self.assertEqual(repeated["suppression_reason"], "duplicate-link-established-snapshot")
 
+    def test_metadata_edit_without_ids_uses_semantic_dedupe_only(self):
+        first = self.build_link_notification([], checks=[], review_id=None)
+        existing = [
+            issue_comment(
+                "link-1",
+                first["comment_body"],
+                "2026-05-26T14:30:00Z",
+            )
+        ]
+
+        changed_snapshot = self.build_link_notification(
+            [],
+            issue_comments=existing,
+            checks=[pending_check()],
+            review_id=None,
+        )
+
+        self.assertTrue(changed_snapshot["should_post"])
+        self.assertIsNone(changed_snapshot["event_key"])
+        self.assertNotEqual(first["dedupe_key"], changed_snapshot["dedupe_key"])
+
+    def test_link_metadata_marker_without_payload_is_ignored(self):
+        comment = issue_comment(
+            "link-marker-only",
+            "[hermes:pr-link-established]\n\nlegacy or damaged marker-only comment",
+            "2026-05-26T14:30:00Z",
+        )
+
+        self.assertIsNone(review_followup.extract_link_established_metadata(comment))
+        self.assertEqual(review_followup.link_established_metadata_comments([comment]), [])
+
+    def test_optional_reviewer_status_does_not_change_visible_link_dedupe(self):
+        base_statuses = [
+            {"key": "claude-code", "role": "required", "status": "responded", "normalized_verdict": "ready"},
+            {"key": "gemini", "role": "optional", "status": "missing"},
+        ]
+        changed_optional = [
+            {"key": "claude-code", "role": "required", "status": "responded", "normalized_verdict": "ready"},
+            {"key": "gemini", "role": "optional", "status": "responded", "normalized_verdict": "ready"},
+        ]
+        follow_up = {"state": "approval_needed", "approval": {"recommendation": "merge"}}
+        dispositions = {"counts": {"applied": 0, "held": 0, "rejected": 0, "unprocessed": 0}}
+
+        first_key = review_followup.build_link_established_dedupe_key(
+            self.pr_url,
+            self.head_sha,
+            follow_up,
+            "green",
+            dispositions,
+            False,
+            base_statuses,
+        )
+        second_key = review_followup.build_link_established_dedupe_key(
+            self.pr_url,
+            self.head_sha,
+            follow_up,
+            "green",
+            dispositions,
+            False,
+            changed_optional,
+        )
+
+        self.assertEqual(first_key, second_key)
+
     def test_dispositions_summarize_review_feedback(self):
         reviewer_comments = [
             reviewer_comment(
@@ -1183,6 +1247,30 @@ class ReviewFollowupLinkEstablishmentTest(unittest.TestCase):
         notification = self.build_link_notification([], issue_comments=existing_gate, checks=[])
         self.assertFalse(notification["synthesis_needed"])
         self.assertIn("Hermes 종합 의견: 이미 존재", notification["comment_body"])
+
+    def test_gate_comment_without_pr_url_requires_matching_head_sha(self):
+        stale_gate = [gate_comment("gate-stale", "stale-head", "2026-05-26T14:00:00Z")]
+        notification = self.build_link_notification([], issue_comments=stale_gate, checks=[])
+
+        self.assertTrue(notification["synthesis_needed"])
+        self.assertIn("Hermes 종합 의견: 필요", notification["comment_body"])
+
+    def test_gate_comment_for_different_pr_does_not_satisfy_synthesis(self):
+        different_pr_gate = [
+            issue_comment(
+                "gate-different-pr",
+                (
+                    "[hermes:pr-review-gate]\n\n"
+                    "<!-- hermes:pr-review-gate-meta "
+                    '{"pr_url":"https://github.com/ittae/flutter_boilerplate/pull/99","state":"approval_needed"}'
+                    " -->"
+                ),
+                "2026-05-26T14:00:00Z",
+            )
+        ]
+        notification = self.build_link_notification([], issue_comments=different_pr_gate, checks=[])
+
+        self.assertTrue(notification["synthesis_needed"])
 
 
 if __name__ == "__main__":

@@ -1925,11 +1925,21 @@ def summarize_review_dispositions(
     }
 
 
-def hermes_synthesis_present(comments: list[dict[str, Any]], pr_url: str | None) -> bool:
+def hermes_synthesis_present(
+    comments: list[dict[str, Any]],
+    pr_url: str | None,
+    head_sha: str | None = None,
+) -> bool:
     """Whether the linked issue already carries a Hermes gate/synthesis verdict for this PR."""
     normalized_pr = canonical_pr_url(pr_url)
+    normalized_head = clean_template_value(head_sha)
     for item in gate_metadata_comments(comments):
-        if not normalized_pr or item.get("pr_url") in {None, normalized_pr}:
+        item_pr = canonical_pr_url(str(item.get("pr_url") or ""))
+        if normalized_pr and item_pr == normalized_pr:
+            return True
+        if normalized_pr and not item_pr and normalized_head and item.get("head_sha") == normalized_head:
+            return True
+        if not normalized_pr:
             return True
     return False
 
@@ -1957,6 +1967,7 @@ def build_link_established_dedupe_key(
             "verdict": entry.get("normalized_verdict") or entry.get("verdict"),
         }
         for entry in reviewer_statuses
+        if entry.get("role") != "optional"
     ]
     payload = {
         "pr_url": canonical,
@@ -1987,12 +1998,12 @@ def extract_link_established_metadata(comment: dict[str, Any]) -> dict[str, Any]
     if HERMES_LINK_ESTABLISHED_MARKER not in content:
         return None
     match = HERMES_LINK_ESTABLISHED_META_RE.search(content)
-    payload: dict[str, Any] = {}
-    if match:
-        try:
-            payload = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            payload = {}
+    if not match:
+        return None
+    try:
+        payload = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        payload = {}
     payload["comment_id"] = comment.get("id")
     payload["parent_id"] = comment.get("parent_id")
     payload["created_at"] = comment.get("created_at")
@@ -2153,7 +2164,7 @@ def build_link_establishment_notification(
     ci_state = summarize_ci_state(checks, follow_up, pr)
     reviewer_statuses = reviewer_signal_statuses(follow_up, reviewer_roster)
     dispositions = summarize_review_dispositions(apply_plan, follow_up)
-    synthesis_needed = not hermes_synthesis_present(comments, pr_url)
+    synthesis_needed = not hermes_synthesis_present(comments, pr_url, head_sha)
     dedupe_key = build_link_established_dedupe_key(
         pr_url,
         head_sha,
@@ -2163,7 +2174,9 @@ def build_link_establishment_notification(
         synthesis_needed,
         reviewer_statuses,
     )
-    event_key = build_event_key(pr_url, head_sha, event_name, event_action, review_id, comment_id)
+    event_key = None
+    if clean_template_value(review_id) or clean_template_value(comment_id):
+        event_key = build_event_key(pr_url, head_sha, event_name, event_action, review_id, comment_id)
 
     existing = link_established_metadata_comments(comments)
     if any(item.get("dedupe_key") == dedupe_key for item in existing):
