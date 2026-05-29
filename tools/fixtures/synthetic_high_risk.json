@@ -1,0 +1,35 @@
+{
+  "additions": 12,
+  "author": {
+    "login": "synthetic",
+    "name": "synthetic"
+  },
+  "baseRefName": "main",
+  "deletions": 3,
+  "files": [
+    {
+      "additions": 8,
+      "changeType": "MODIFIED",
+      "deletions": 2,
+      "path": "lib/features/auth/data/repositories/auth_repository_impl.dart"
+    },
+    {
+      "additions": 4,
+      "changeType": "MODIFIED",
+      "deletions": 1,
+      "path": "pubspec.yaml"
+    },
+    {
+      "additions": 0,
+      "changeType": "ADDED",
+      "deletions": 0,
+      "path": "lib/core/utils/string_utils.dart"
+    }
+  ],
+  "headRefName": "feat/synthetic-auth-change",
+  "headRefOid": "0000000000000000000000000000000000000001",
+  "number": 1,
+  "state": "OPEN",
+  "title": "feat: synthetic high-risk PR for dispatcher fixture",
+  "url": "https://github.com/ittae/ittae/pull/1"
+}

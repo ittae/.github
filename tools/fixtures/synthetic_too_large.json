@@ -1,0 +1,23 @@
+{
+  "additions": 1800,
+  "author": {
+    "login": "synthetic",
+    "name": "synthetic"
+  },
+  "baseRefName": "main",
+  "deletions": 200,
+  "files": [
+    {
+      "additions": 1800,
+      "changeType": "MODIFIED",
+      "deletions": 200,
+      "path": "lib/features/sample/presentation/pages/sample_page.dart"
+    }
+  ],
+  "headRefName": "feat/synthetic-too-large",
+  "headRefOid": "0000000000000000000000000000000000000002",
+  "number": 2,
+  "state": "OPEN",
+  "title": "feat: synthetic too-large PR for dispatcher fixture",
+  "url": "https://github.com/ittae/ittae/pull/2"
+}
