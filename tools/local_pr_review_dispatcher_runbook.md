@@ -142,6 +142,10 @@ gh pr view <NUM> --repo <OWNER>/<REPO> \
   > tools/fixtures/<owner>_<repo>_pr_<num>.json
 ```
 
+## Phase 1 (진행 중)
+
+Phase 1 아키텍처 / mutation adapter / dual-run / rollback 가이드는 [`tools/phase1_local_pr_review_gate.md`](./phase1_local_pr_review_gate.md) 를 참고하세요. mutation adapter는 [`tools/pr_review_gate_actions.py`](./pr_review_gate_actions.py) 에 분리돼 있고 기본 dry-run / disabled-by-default 입니다.
+
 ## Phase 1+ 에서 추가될 항목 (현 PR 범위 밖)
 
 - live wire: `would_apply_labels` / `would_post_comments` 실제 적용 (`gh pr edit`, `gh pr comment`).
