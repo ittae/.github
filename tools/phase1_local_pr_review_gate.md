@@ -76,7 +76,7 @@ print(json.dumps([r.to_dict() for r in results], ensure_ascii=False, indent=2))
 - `GhCliExecutor(enable_mutations=False)` (기본 생성): mutating 호출 시 `GateActionError`를 던지며, 던지기 전에도 runner를 호출하지 않는다.
 - `GhCliExecutor(enable_mutations=True)`: 명시적 opt-in. Phase 2 dual-run 검증 + 사람 승인 후에만 사용한다.
 
-action 종류: `ADD_LABELS`, `REMOVE_LABELS`, `POST_COMMENT`, `SET_CHECK_STATUS`. check status는 review_followup의 `hermes/pr-review-gate` Check 게시를 위한 forward-compatible 슬롯이며, 현재 기존 `claude-code-review.yml`은 Check가 아니라 label+comment로 게이트하므로 기본 경로에서는 쓰이지 않는다.
+action 종류: `ADD_LABELS`, `REMOVE_LABELS`, `POST_COMMENT`, `SET_CHECK_STATUS`. `SET_CHECK_STATUS`는 Phase 2에서 required check로 쓸 수 있도록 실제 check-run을 생성하는 Checks API 형태(`gh api -X POST repos/{owner}/{repo}/check-runs -f head_sha=... -f conclusion=...`)로 빌드한다 — PR 코멘트가 아니다. Checks API는 check-run을 커밋에 묶으므로 `head_sha`가 필수이며, `details_url`은 선택이다. 현재 기존 `claude-code-review.yml`은 Check가 아니라 label+comment로 게이트하므로 기본 경로에서는 `SET_CHECK_STATUS`를 쓰지 않고, review_followup ↔ adapter 연동(Phase 2)에서 `hermes/pr-review-gate` Check 게시에 사용한다.
 
 ## 1주 dual-run 운영 방법
 

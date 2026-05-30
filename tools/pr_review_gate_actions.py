@@ -59,8 +59,13 @@ class PRTarget:
     number: int
 
     def __post_init__(self) -> None:
-        if not self.repo or "/" not in self.repo:
-            raise GateActionError(f"PRTarget.repo must be 'owner/name', got: {self.repo!r}")
+        # Require an exact two-part owner/name slug. Reject "owner/", "/name",
+        # and "owner/name/extra" so a malformed slug can't slip into a gh path.
+        parts = self.repo.split("/") if self.repo else []
+        if len(parts) != 2 or not parts[0] or not parts[1]:
+            raise GateActionError(
+                f"PRTarget.repo must be exactly 'owner/name', got: {self.repo!r}"
+            )
         if self.number <= 0:
             raise GateActionError(f"PRTarget.number must be positive, got: {self.number!r}")
 
@@ -71,7 +76,10 @@ class PlannedAction:
 
     `labels` is used by ADD_LABELS / REMOVE_LABELS.
     `body` is used by POST_COMMENT.
-    `check_name` / `check_conclusion` / `check_summary` are used by SET_CHECK_STATUS.
+    `check_name` / `head_sha` / `check_conclusion` / `check_summary` /
+    `details_url` are used by SET_CHECK_STATUS. `head_sha` is mandatory for a
+    real check-run (the Checks API keys the run to a commit), so it has no
+    default — the caller must supply the head SHA being reviewed.
     """
 
     kind: str
@@ -79,8 +87,10 @@ class PlannedAction:
     labels: tuple[str, ...] = ()
     body: str = ""
     check_name: str = DEFAULT_CHECK_NAME
+    head_sha: str = ""
     check_conclusion: str = ""
     check_summary: str = ""
+    details_url: str = ""
 
     def to_dict(self) -> dict[str, object]:
         out: dict[str, object] = {
@@ -94,8 +104,10 @@ class PlannedAction:
             out["body"] = self.body
         elif self.kind == SET_CHECK_STATUS:
             out["check_name"] = self.check_name
+            out["head_sha"] = self.head_sha
             out["check_conclusion"] = self.check_conclusion
             out["check_summary"] = self.check_summary
+            out["details_url"] = self.details_url
         return out
 
 
@@ -129,10 +141,10 @@ def build_gh_command(action: PlannedAction) -> list[str]:
     Mirrors the mutation calls in claude-code-review.yml's gate-classify job:
         gh pr edit <n> -R <repo> --add-label <l> ...
         gh pr comment <n> -R <repo> --body <body>
-    Check status uses `gh pr comment` is NOT correct; real Checks need the
-    Checks API. Phase 1 posts the gate verdict via the review_followup runtime,
-    so SET_CHECK_STATUS is represented here as the documented argv shape and is
-    only ever exercised by the live executor once that path is wired + approved.
+    SET_CHECK_STATUS creates/updates a real GitHub check-run via the Checks API
+        gh api -X POST repos/<owner>/<repo>/check-runs -f head_sha=<sha> ...
+    so it can serve as a required check in Phase 2. This argv documents intent
+    and is only ever run by the live executor once that path is wired + approved.
     """
     repo = action.target.repo
     num = str(action.target.number)
@@ -155,21 +167,39 @@ def build_gh_command(action: PlannedAction) -> list[str]:
             raise GateActionError("POST_COMMENT requires a non-empty body")
         return ["gh", "pr", "comment", num, "-R", repo, "--body", action.body]
     if action.kind == SET_CHECK_STATUS:
+        if not action.head_sha:
+            raise GateActionError(
+                "SET_CHECK_STATUS requires head_sha (the Checks API keys a "
+                "check-run to a commit)."
+            )
         if not action.check_conclusion:
             raise GateActionError("SET_CHECK_STATUS requires a conclusion")
-        # `gh api` form for a check-run-style status comment. The review_followup
-        # runtime owns the canonical Check creation; this argv documents intent
-        # and is only run by the live executor after explicit approval.
-        return [
+        # Real check-run creation via the Checks API. A conclusion implies a
+        # completed run, so status=completed is set alongside it.
+        cmd = [
             "gh",
-            "pr",
-            "comment",
-            num,
-            "-R",
-            repo,
-            "--body",
-            f"[{action.check_name}] {action.check_conclusion}\n\n{action.check_summary}".strip(),
+            "api",
+            "-X",
+            "POST",
+            f"repos/{repo}/check-runs",
+            "-f",
+            f"name={action.check_name}",
+            "-f",
+            f"head_sha={action.head_sha}",
+            "-f",
+            "status=completed",
+            "-f",
+            f"conclusion={action.check_conclusion}",
         ]
+        if action.details_url:
+            cmd += ["-f", f"details_url={action.details_url}"]
+        cmd += [
+            "-f",
+            f"output[title]={action.check_name}",
+            "-f",
+            f"output[summary]={action.check_summary}",
+        ]
+        return cmd
     raise GateActionError(f"Unknown action kind: {action.kind!r}")
 
 
@@ -275,7 +305,13 @@ def plan_actions_from_classify(
     labels = classify.get("would_apply_labels") or []
     if not isinstance(labels, list):
         raise GateActionError("would_apply_labels must be a list")
-    label_strs = tuple(str(label) for label in labels if str(label))
+    # Drop None and whitespace-only entries; never let `str(None)` => "None"
+    # become a real label.
+    label_strs = tuple(
+        str(label).strip()
+        for label in labels
+        if label is not None and str(label).strip()
+    )
     if label_strs:
         actions.append(
             PlannedAction(kind=ADD_LABELS, target=target, labels=label_strs)
@@ -288,7 +324,8 @@ def plan_actions_from_classify(
         if not isinstance(comment, dict):
             raise GateActionError("each would_post_comments entry must be a dict")
         body = str(comment.get("body") or "")
-        if not body:
+        # Skip whitespace-only bodies; keep meaningful body verbatim.
+        if not body.strip():
             continue
         actions.append(PlannedAction(kind=POST_COMMENT, target=target, body=body))
 

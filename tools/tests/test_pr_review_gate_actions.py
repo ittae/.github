@@ -36,9 +36,20 @@ def _pr() -> actions.PRTarget:
 
 
 class TestPRTarget(unittest.TestCase):
+    def test_accepts_valid_two_part_slug(self) -> None:
+        target = actions.PRTarget(repo="ittae/ittae", number=1)
+        self.assertEqual(target.repo, "ittae/ittae")
+
     def test_rejects_bad_repo(self) -> None:
         with self.assertRaises(actions.GateActionError):
             actions.PRTarget(repo="not-a-repo", number=1)
+
+    def test_rejects_partial_two_part_slugs(self) -> None:
+        # owner/, /name, owner/name/extra, and empty must all be rejected.
+        for bad in ("owner/", "/name", "owner/name/extra", "", "/", "a/b/c"):
+            with self.subTest(repo=bad):
+                with self.assertRaises(actions.GateActionError):
+                    actions.PRTarget(repo=bad, number=1)
 
     def test_rejects_nonpositive_number(self) -> None:
         with self.assertRaises(actions.GateActionError):
@@ -92,6 +103,59 @@ class TestBuildGhCommand(unittest.TestCase):
         with self.assertRaises(actions.GateActionError):
             actions.build_gh_command(action)
 
+    def test_set_check_status_uses_checks_api(self) -> None:
+        action = actions.PlannedAction(
+            kind=actions.SET_CHECK_STATUS,
+            target=_pr(),
+            check_name="hermes/pr-review-gate",
+            head_sha="deadbeef",
+            check_conclusion="success",
+            check_summary="all reviewers passed",
+        )
+        self.assertEqual(
+            actions.build_gh_command(action),
+            [
+                "gh", "api", "-X", "POST", "repos/ittae/ittae/check-runs",
+                "-f", "name=hermes/pr-review-gate",
+                "-f", "head_sha=deadbeef",
+                "-f", "status=completed",
+                "-f", "conclusion=success",
+                "-f", "output[title]=hermes/pr-review-gate",
+                "-f", "output[summary]=all reviewers passed",
+            ],
+        )
+
+    def test_set_check_status_includes_details_url_when_present(self) -> None:
+        action = actions.PlannedAction(
+            kind=actions.SET_CHECK_STATUS,
+            target=_pr(),
+            head_sha="abc123",
+            check_conclusion="failure",
+            details_url="https://example.invalid/run/1",
+        )
+        cmd = actions.build_gh_command(action)
+        self.assertIn("details_url=https://example.invalid/run/1", cmd)
+        # No PR comment fallback — must be the Checks API path.
+        self.assertEqual(cmd[:5], ["gh", "api", "-X", "POST", "repos/ittae/ittae/check-runs"])
+
+    def test_set_check_status_requires_head_sha(self) -> None:
+        action = actions.PlannedAction(
+            kind=actions.SET_CHECK_STATUS,
+            target=_pr(),
+            check_conclusion="success",
+        )
+        with self.assertRaises(actions.GateActionError):
+            actions.build_gh_command(action)
+
+    def test_set_check_status_requires_conclusion(self) -> None:
+        action = actions.PlannedAction(
+            kind=actions.SET_CHECK_STATUS,
+            target=_pr(),
+            head_sha="abc123",
+        )
+        with self.assertRaises(actions.GateActionError):
+            actions.build_gh_command(action)
+
 
 class TestPlanActionsFromClassify(unittest.TestCase):
     def test_proceed_no_actions(self) -> None:
@@ -123,6 +187,31 @@ class TestPlanActionsFromClassify(unittest.TestCase):
         classify = {
             "would_apply_labels": [],
             "would_post_comments": [{"target": "pr", "body": ""}],
+        }
+        self.assertEqual(actions.plan_actions_from_classify(classify, _pr()), [])
+
+    def test_skips_whitespace_only_comment_body(self) -> None:
+        classify = {
+            "would_apply_labels": [],
+            "would_post_comments": [{"target": "pr", "body": "   \n\t "}],
+        }
+        self.assertEqual(actions.plan_actions_from_classify(classify, _pr()), [])
+
+    def test_filters_none_and_blank_labels(self) -> None:
+        classify = {
+            "would_apply_labels": [None, "", "  ", "high-risk", "  needs-human-review  "],
+            "would_post_comments": [],
+        }
+        plan = actions.plan_actions_from_classify(classify, _pr())
+        self.assertEqual(len(plan), 1)
+        # None/blank dropped; surviving labels stripped. No "None" label.
+        self.assertEqual(plan[0].labels, ("high-risk", "needs-human-review"))
+        self.assertNotIn("None", plan[0].labels)
+
+    def test_all_blank_labels_produce_no_label_action(self) -> None:
+        classify = {
+            "would_apply_labels": [None, "", "   "],
+            "would_post_comments": [],
         }
         self.assertEqual(actions.plan_actions_from_classify(classify, _pr()), [])
 
