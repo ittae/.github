@@ -13,6 +13,7 @@
 
 - 입력: GitHub PR URL
 - 동작: PR 메타데이터 수집 → `gate-classify` 포팅 (size limit + high-risk path 매칭) → agent dispatch 페이로드 빌드 → stdout JSON 출력
+- live 모드에서 size(`additions`/`deletions`)는 `gh pr view --json`, **changed file 목록은 `gh pr diff --name-only`** 로 수집합니다. `gh pr view --json files`는 100개에서 truncate되어 큰 PR의 high-risk 파일을 놓칠 수 있어, 원본 워크플로처럼 diff 기반 전체 목록을 사용합니다.
 - **GitHub mutation 없음**: 라벨/코멘트는 `would_apply_labels`, `would_post_comments` 로 페이로드에 기술만 합니다.
 - live wire (실제 라벨/코멘트 게시, 실제 agent 실행) 는 Phase 1+ 작업입니다. `--dry-run` 누락 시 argparse 단계에서 hard fail 합니다.
 

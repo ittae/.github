@@ -19,9 +19,12 @@ from __future__ import annotations
 import io
 import json
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 # Make the dispatcher importable when running this file directly.
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -48,6 +51,11 @@ class TestParsePrUrl(unittest.TestCase):
     def test_accepts_trailing_slash(self) -> None:
         ref = dispatcher.parse_pr_url("https://github.com/ittae/ittae/pull/425/")
         self.assertEqual(ref.number, 425)
+
+    def test_accepts_www_host(self) -> None:
+        ref = dispatcher.parse_pr_url("https://www.github.com/ittae/ittae/pull/7")
+        self.assertEqual(ref.repo, "ittae/ittae")
+        self.assertEqual(ref.number, 7)
 
     def test_rejects_non_github_host(self) -> None:
         with self.assertRaises(dispatcher.DispatcherError):
@@ -81,6 +89,43 @@ class TestFixtureLoading(unittest.TestCase):
             dispatcher.load_pr_metadata_from_fixture(
                 ref, os.path.join(FIXTURE_DIR, "does_not_exist.json")
             )
+
+    def test_non_object_fixture_rejected(self) -> None:
+        ref = dispatcher.parse_pr_url("https://github.com/ittae/ittae/pull/1")
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as handle:
+            json.dump(["not", "an", "object"], handle)
+            path = handle.name
+        try:
+            with self.assertRaises(dispatcher.DispatcherError):
+                dispatcher.load_pr_metadata_from_fixture(ref, path)
+        finally:
+            os.unlink(path)
+
+    def test_nullable_fields_become_empty_string(self) -> None:
+        ref = dispatcher.PRRef(repo="ittae/ittae", number=1, url="u")
+        payload = {
+            "title": None,
+            "headRefOid": None,
+            "headRefName": None,
+            "baseRefName": None,
+            "state": None,
+            "author": None,
+            "additions": None,
+            "deletions": None,
+        }
+        meta = dispatcher._pr_metadata_from_payload(ref, payload)
+        self.assertEqual(meta.title, "")
+        self.assertEqual(meta.head_sha, "")
+        self.assertEqual(meta.head_ref, "")
+        self.assertEqual(meta.base_ref, "")
+        self.assertEqual(meta.state, "")
+        self.assertEqual(meta.author, "")
+        self.assertEqual(meta.additions, 0)
+        self.assertEqual(meta.deletions, 0)
+        # Critically: never the literal string "None".
+        self.assertNotIn("None", [meta.title, meta.head_sha, meta.state])
 
 
 class TestClassifyPr(unittest.TestCase):
@@ -248,6 +293,63 @@ class TestBuildDispatchPayload(unittest.TestCase):
         names = [agent["name"] for agent in payload["agents"]]
         self.assertIn("claude-code", names)
         self.assertNotIn("retired-bot", names)
+
+
+class TestReviewerRosterLoading(unittest.TestCase):
+    def test_non_object_roster_rejected(self) -> None:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".json", delete=False, encoding="utf-8"
+        ) as handle:
+            json.dump(["reviewers"], handle)
+            path = handle.name
+        try:
+            with self.assertRaises(dispatcher.DispatcherError):
+                dispatcher.load_reviewer_roster(path)
+        finally:
+            os.unlink(path)
+
+
+class TestLiveMetadataAugmentation(unittest.TestCase):
+    """Live mode must source the changed-file list from `gh pr diff
+    --name-only`, not the 100-file-capped `gh pr view --json files`."""
+
+    def test_files_sourced_from_diff_name_only(self) -> None:
+        ref = dispatcher.parse_pr_url("https://github.com/ittae/ittae/pull/9")
+        # `gh pr view --json` returns a TRUNCATED file list (missing the
+        # high-risk pubspec.yaml); `gh pr diff --name-only` returns the
+        # complete list including it.
+        view_payload = {
+            "title": "big PR",
+            "headRefOid": "deadbeef",
+            "headRefName": "feat/big",
+            "baseRefName": "main",
+            "additions": 50,
+            "deletions": 10,
+            "state": "OPEN",
+            "author": {"login": "someone"},
+            "files": [{"path": "lib/a.dart"}],  # truncated
+        }
+        diff_output = "lib/a.dart\nlib/b.dart\npubspec.yaml\n"
+
+        def fake_run(args, **kwargs):  # noqa: ANN001
+            self.assertEqual(kwargs.get("encoding"), "utf-8")
+            if "view" in args:
+                stdout = json.dumps(view_payload)
+            elif "diff" in args:
+                self.assertIn("--name-only", args)
+                stdout = diff_output
+            else:
+                raise AssertionError(f"unexpected gh args: {args}")
+            return subprocess.CompletedProcess(args, 0, stdout=stdout, stderr="")
+
+        with mock.patch.object(dispatcher.subprocess, "run", side_effect=fake_run):
+            meta = dispatcher.load_pr_metadata_via_gh(ref)
+
+        self.assertEqual(meta.files, ["lib/a.dart", "lib/b.dart", "pubspec.yaml"])
+        # The high-risk file only present in the diff list must be detected.
+        classify = dispatcher.classify_pr(meta)
+        self.assertTrue(classify.is_high_risk)
+        self.assertIn("pubspec.yaml", classify.matched_high_risk_files)
 
 
 class TestRunDispatchEndToEnd(unittest.TestCase):

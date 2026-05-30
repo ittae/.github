@@ -99,10 +99,13 @@ class ClassifyResult:
 _PR_PATH_RE = re.compile(r"^/(?P<owner>[^/]+)/(?P<repo>[^/]+)/pull/(?P<num>\d+)/?$")
 
 
+_ALLOWED_PR_HOSTS = ("github.com", "www.github.com")
+
+
 def parse_pr_url(pr_url: str) -> PRRef:
     """Parse a GitHub PR URL into (repo, number)."""
     parsed = urlparse(pr_url)
-    if parsed.scheme not in ("http", "https") or parsed.netloc != "github.com":
+    if parsed.scheme not in ("http", "https") or parsed.netloc not in _ALLOWED_PR_HOSTS:
         raise DispatcherError(
             f"PR URL must be a https://github.com/<owner>/<repo>/pull/<n> URL, got: {pr_url!r}"
         )
@@ -125,11 +128,11 @@ def parse_pr_url(pr_url: str) -> PRRef:
 _PR_VIEW_FIELDS = "number,title,additions,deletions,files,headRefOid,headRefName,baseRefName,state,url,author"
 
 
-def _run_gh_json(args: list[str]) -> Any:
-    """Invoke `gh` and parse stdout as JSON. Surfaces stderr on failure."""
+def _run_gh(args: list[str]) -> str:
+    """Invoke `gh` and return stdout (UTF-8). Surfaces stderr on failure."""
     try:
         completed = subprocess.run(
-            args, check=True, capture_output=True, text=True
+            args, check=True, capture_output=True, text=True, encoding="utf-8"
         )
     except FileNotFoundError as exc:
         raise DispatcherError(
@@ -140,16 +143,49 @@ def _run_gh_json(args: list[str]) -> Any:
         raise DispatcherError(
             f"gh command failed ({' '.join(args)}): {stderr}"
         ) from exc
+    return completed.stdout
+
+
+def _run_gh_json(args: list[str]) -> Any:
+    """Invoke `gh` and parse stdout as JSON."""
+    out = _run_gh(args)
     try:
-        return json.loads(completed.stdout)
+        return json.loads(out)
     except json.JSONDecodeError as exc:
         raise DispatcherError(
-            f"gh returned non-JSON output for {' '.join(args)}: {completed.stdout[:200]!r}"
+            f"gh returned non-JSON output for {' '.join(args)}: {out[:200]!r}"
         ) from exc
 
 
+def _list_changed_files_via_gh(pr_ref: PRRef) -> list[str]:
+    """Full changed-file list via `gh pr diff --name-only`.
+
+    `gh pr view --json files` truncates at 100 files, which can silently drop
+    high-risk paths (auth, .github/workflows, pubspec) on large PRs and cause a
+    missed risk classification. The original gate-classify workflow used
+    `gh pr diff --name-only` for risk matching, so mirror that here.
+    """
+    out = _run_gh(
+        [
+            "gh",
+            "pr",
+            "diff",
+            str(pr_ref.number),
+            "--repo",
+            pr_ref.repo,
+            "--name-only",
+        ]
+    )
+    return [line.strip() for line in out.splitlines() if line.strip()]
+
+
 def load_pr_metadata_via_gh(pr_ref: PRRef) -> PRMetadata:
-    """Fetch PR metadata via the `gh` CLI."""
+    """Fetch PR metadata via the `gh` CLI.
+
+    Size (additions/deletions) comes from `gh pr view --json`, but the changed
+    file list is sourced from `gh pr diff --name-only` so risk classification
+    sees every file even when the PR exceeds the 100-file `--json files` cap.
+    """
     payload = _run_gh_json(
         [
             "gh",
@@ -162,7 +198,8 @@ def load_pr_metadata_via_gh(pr_ref: PRRef) -> PRMetadata:
             _PR_VIEW_FIELDS,
         ]
     )
-    return _pr_metadata_from_payload(pr_ref, payload)
+    changed_files = _list_changed_files_via_gh(pr_ref)
+    return _pr_metadata_from_payload(pr_ref, payload, files_override=changed_files)
 
 
 def load_pr_metadata_from_fixture(pr_ref: PRRef, fixture_path: str) -> PRMetadata:
@@ -174,20 +211,45 @@ def load_pr_metadata_from_fixture(pr_ref: PRRef, fixture_path: str) -> PRMetadat
         raise DispatcherError(f"Cannot read fixture {fixture_path!r}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise DispatcherError(f"Fixture {fixture_path!r} is not valid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise DispatcherError(
+            f"Fixture {fixture_path!r} must be a JSON object, got {type(payload).__name__}."
+        )
     return _pr_metadata_from_payload(pr_ref, payload)
 
 
-def _pr_metadata_from_payload(pr_ref: PRRef, payload: dict[str, Any]) -> PRMetadata:
-    """Normalize a `gh pr view --json` payload (or fixture) into PRMetadata."""
-    files_raw = payload.get("files") or []
-    file_paths: list[str] = []
-    for entry in files_raw:
-        if isinstance(entry, dict):
-            path = entry.get("path")
-            if isinstance(path, str):
-                file_paths.append(path)
-        elif isinstance(entry, str):
-            file_paths.append(entry)
+def _coerce_str(value: Any) -> str:
+    """Coerce a possibly-null JSON value to a string without leaking 'None'."""
+    return "" if value is None else str(value)
+
+
+def _pr_metadata_from_payload(
+    pr_ref: PRRef,
+    payload: dict[str, Any],
+    *,
+    files_override: list[str] | None = None,
+) -> PRMetadata:
+    """Normalize a `gh pr view --json` payload (or fixture) into PRMetadata.
+
+    When files_override is provided (live mode, from `gh pr diff --name-only`),
+    it replaces the truncation-prone `files` field from the payload.
+    """
+    if not isinstance(payload, dict):
+        raise DispatcherError(
+            f"Expected a JSON object for PR metadata, got {type(payload).__name__}."
+        )
+    if files_override is not None:
+        file_paths = list(files_override)
+    else:
+        files_raw = payload.get("files") or []
+        file_paths = []
+        for entry in files_raw:
+            if isinstance(entry, dict):
+                path = entry.get("path")
+                if isinstance(path, str):
+                    file_paths.append(path)
+            elif isinstance(entry, str):
+                file_paths.append(entry)
     author_payload = payload.get("author") or {}
     author_login = ""
     if isinstance(author_payload, dict):
@@ -196,15 +258,15 @@ def _pr_metadata_from_payload(pr_ref: PRRef, payload: dict[str, Any]) -> PRMetad
         author_login = author_payload
     return PRMetadata(
         ref=pr_ref,
-        title=str(payload.get("title", "")),
-        head_sha=str(payload.get("headRefOid", "")),
-        head_ref=str(payload.get("headRefName", "")),
-        base_ref=str(payload.get("baseRefName", "")),
-        additions=int(payload.get("additions", 0) or 0),
-        deletions=int(payload.get("deletions", 0) or 0),
+        title=_coerce_str(payload.get("title")),
+        head_sha=_coerce_str(payload.get("headRefOid")),
+        head_ref=_coerce_str(payload.get("headRefName")),
+        base_ref=_coerce_str(payload.get("baseRefName")),
+        additions=int(payload.get("additions") or 0),
+        deletions=int(payload.get("deletions") or 0),
         files=file_paths,
-        author=str(author_login),
-        state=str(payload.get("state", "")),
+        author=_coerce_str(author_login),
+        state=_coerce_str(payload.get("state")),
     )
 
 
@@ -308,11 +370,16 @@ def load_reviewer_roster(path: str) -> dict[str, Any]:
     ~/.hermes/workspace/tools/reviewer_roster.json."""
     try:
         with open(path, encoding="utf-8") as handle:
-            return json.load(handle)
+            roster = json.load(handle)
     except OSError as exc:
         raise DispatcherError(f"Cannot read reviewer roster {path!r}: {exc}") from exc
     except json.JSONDecodeError as exc:
         raise DispatcherError(f"Reviewer roster {path!r} is not valid JSON: {exc}") from exc
+    if not isinstance(roster, dict):
+        raise DispatcherError(
+            f"Reviewer roster {path!r} must be a JSON object, got {type(roster).__name__}."
+        )
+    return roster
 
 
 def build_dispatch_payload(
