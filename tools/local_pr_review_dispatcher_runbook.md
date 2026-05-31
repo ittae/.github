@@ -158,6 +158,13 @@ python3 tools/local_pr_review_dual_run.py \
 
 이 명령은 dispatcher dry-run, adapter dry-run, 기존 Action labels/comments read-only 스냅샷을 하나의 리포트로 묶습니다. `comparison.status`는 `match`, `mismatch`, `no_expected_gate_action` 중 하나이며, `safety.mutations_enabled=false`가 정상입니다.
 
+리포트에는 `multi_reviewer_debate_gate`도 포함됩니다. 이 필드는 실제 reviewer를 호출하지 않는 dry-run schema scaffold이며, 1주 dual-run 중 `Claude`, `Codex`, `Gemini`, `Copilot`, `local-hermes` 계열 reviewer 결과를 같은 형식으로 비교하기 위한 자리입니다.
+
+- Round 1: reviewer별 독립 finding. 각 finding은 `file`, `line`, `evidence`를 가져야 합니다.
+- Round 2: 다른 reviewer finding에 대한 `agree`, `dispute`, `hold` counter-review. counter-review도 `file`, `line`, `evidence`를 가져야 합니다.
+- Hermes final arbitration: `must-fix`, `nice-to-have`, `false-positive`, `hold`, `safe-to-merge` bucket으로 최종 정리합니다.
+- Quality metrics: reviewer, finding count, accepted count, false positive count 또는 unknown 상태를 기록하고 elapsed/cost/local resource는 확장 필드로 남깁니다.
+
 ## Phase 1+ 에서 추가될 항목 (현 PR 범위 밖)
 
 - live wire: `would_apply_labels` / `would_post_comments` 실제 적용 (`gh pr edit`, `gh pr comment`).

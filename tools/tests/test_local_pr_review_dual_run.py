@@ -129,6 +129,74 @@ class TestCompareGateToAction(unittest.TestCase):
         self.assertEqual(comparison["missing_comment_indexes"], [])
 
 
+class TestMultiReviewerDebateGate(unittest.TestCase):
+    def test_report_contains_multi_reviewer_debate_schema(self) -> None:
+        report = dual_run.run_dual_run(
+            pr_url="https://github.com/ittae/ittae/pull/1",
+            pr_size_limit=1500,
+            high_risk_paths_regex=dual_run.dispatcher.DEFAULT_HIGH_RISK_PATHS,
+            model=dual_run.dispatcher.DEFAULT_MODEL,
+            roster_path=ROSTER_PATH,
+            fixture_path=FIXTURE_HIGH_RISK,
+            action_snapshot_fixture=SNAPSHOT_HIGH_RISK,
+        )
+        gate = report["multi_reviewer_debate_gate"]
+        reviewers = [item["reviewer"] for item in gate["roster"]["reviewers"]]
+        self.assertEqual(
+            reviewers,
+            ["Claude", "Codex", "Gemini", "Copilot", "local-hermes"],
+        )
+        self.assertEqual(gate["mode"], "dry-run-schema-only")
+        self.assertEqual(
+            gate["round_1_independent_findings"][0]["finding_required_fields"],
+            ["reviewer", "file", "line", "evidence", "severity", "message"],
+        )
+        self.assertEqual(
+            gate["round_2_counter_review"][0]["counter_review_required_fields"],
+            [
+                "reviewer",
+                "target_reviewer",
+                "target_finding_id",
+                "position",
+                "file",
+                "line",
+                "evidence",
+            ],
+        )
+        self.assertEqual(
+            sorted(gate["hermes_final_arbitration"]["outcome_buckets"]),
+            [
+                "false-positive",
+                "hold",
+                "must-fix",
+                "nice-to-have",
+                "safe-to-merge",
+            ],
+        )
+
+    def test_quality_metrics_are_present_for_each_reviewer(self) -> None:
+        report = dual_run.run_dual_run(
+            pr_url="https://github.com/ittae/ittae/pull/1",
+            pr_size_limit=1500,
+            high_risk_paths_regex=dual_run.dispatcher.DEFAULT_HIGH_RISK_PATHS,
+            model=dual_run.dispatcher.DEFAULT_MODEL,
+            roster_path=ROSTER_PATH,
+            fixture_path=FIXTURE_HIGH_RISK,
+            action_snapshot_fixture=SNAPSHOT_HIGH_RISK,
+        )
+        metrics = report["multi_reviewer_debate_gate"]["quality_metrics"]
+        self.assertEqual(len(metrics), 5)
+        for item in metrics:
+            self.assertIn("reviewer", item)
+            self.assertEqual(item["finding_count"], 0)
+            self.assertEqual(item["accepted_count"], 0)
+            self.assertIsNone(item["false_positive_count"])
+            self.assertEqual(item["status"], "unknown")
+            self.assertIn("elapsed_ms", item["extensions"])
+            self.assertIn("cost", item["extensions"])
+            self.assertIn("local_resource", item["extensions"])
+
+
 class TestCli(unittest.TestCase):
     def test_cli_requires_dry_run(self) -> None:
         with self.assertRaises(SystemExit):
@@ -147,6 +215,8 @@ class TestCli(unittest.TestCase):
         text = dual_run.render_markdown_report(report)
         self.assertIn("Dual-Run Report", text)
         self.assertIn("mutations: `disabled`", text)
+        self.assertIn("Multi-Reviewer Debate Gate", text)
+        self.assertIn("Claude, Codex, Gemini, Copilot, local-hermes", text)
 
     def test_live_snapshot_uses_read_only_gh_pr_view(self) -> None:
         payload = {"labels": [{"name": "high-risk"}], "comments": []}

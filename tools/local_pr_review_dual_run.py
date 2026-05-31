@@ -23,6 +23,30 @@ import pr_review_gate_actions as actions
 
 TARGET_GATE_LABELS = ("too-large", "high-risk", "needs-human-review")
 PROVENANCE_GATE_LABELS = ("too-large", "high-risk")
+DEFAULT_LOCAL_REVIEWER = {
+    "key": "local-hermes",
+    "reviewer": "local-hermes",
+    "role": "local",
+    "signal_source": ["local-dry-run"],
+    "status": "placeholder",
+}
+FINDING_REQUIRED_FIELDS = ("reviewer", "file", "line", "evidence", "severity", "message")
+COUNTER_REVIEW_REQUIRED_FIELDS = (
+    "reviewer",
+    "target_reviewer",
+    "target_finding_id",
+    "position",
+    "file",
+    "line",
+    "evidence",
+)
+ARBITRATION_BUCKETS = (
+    "must-fix",
+    "nice-to-have",
+    "false-positive",
+    "hold",
+    "safe-to-merge",
+)
 VERSION = "0.1.0"
 
 
@@ -227,6 +251,104 @@ def _dry_run_actions(dispatch_result: dict[str, Any]) -> list[dict[str, Any]]:
     return [result.to_dict() for result in actions.apply_actions(plan)]
 
 
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _reviewer_entries(dispatch_result: dict[str, Any]) -> list[dict[str, Any]]:
+    agents = dispatch_result.get("dispatch", {}).get("agents") or []
+    reviewers: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    if isinstance(agents, list):
+        for agent in agents:
+            if not isinstance(agent, dict):
+                continue
+            key = str(agent.get("name") or agent.get("display_name") or "").strip()
+            reviewer = str(agent.get("display_name") or key).strip()
+            if not key or not reviewer:
+                continue
+            seen.add(key)
+            reviewers.append(
+                {
+                    "key": key,
+                    "reviewer": reviewer,
+                    "role": str(agent.get("role") or "supplementary"),
+                    "signal_source": [str(item) for item in _as_list(agent.get("signal_source"))],
+                    "status": "planned",
+                    "agent_ids": [str(item) for item in _as_list(agent.get("agent_ids"))],
+                    "github_logins": [str(item) for item in _as_list(agent.get("github_logins"))],
+                    "extensions": {
+                        "model": agent.get("model"),
+                        "local_resource": None,
+                    },
+                }
+            )
+    if DEFAULT_LOCAL_REVIEWER["key"] not in seen:
+        reviewers.append(dict(DEFAULT_LOCAL_REVIEWER))
+    return reviewers
+
+
+def build_debate_gate_schema(dispatch_result: dict[str, Any], *, roster_path: str) -> dict[str, Any]:
+    reviewers = _reviewer_entries(dispatch_result)
+    round_1 = [
+        {
+            "reviewer": item["reviewer"],
+            "status": "not_run",
+            "findings": [],
+            "finding_required_fields": list(FINDING_REQUIRED_FIELDS),
+        }
+        for item in reviewers
+    ]
+    round_2 = [
+        {
+            "reviewer": item["reviewer"],
+            "status": "not_run",
+            "responses": [],
+            "counter_review_required_fields": list(COUNTER_REVIEW_REQUIRED_FIELDS),
+            "allowed_positions": ["agree", "dispute", "hold"],
+        }
+        for item in reviewers
+    ]
+    metrics = [
+        {
+            "reviewer": item["reviewer"],
+            "finding_count": 0,
+            "accepted_count": 0,
+            "false_positive_count": None,
+            "status": "unknown",
+            "extensions": {
+                "elapsed_ms": None,
+                "cost": None,
+                "local_resource": item.get("extensions", {}).get("local_resource")
+                if isinstance(item.get("extensions"), dict)
+                else None,
+            },
+        }
+        for item in reviewers
+    ]
+    return {
+        "schema_version": "0.1",
+        "mode": "dry-run-schema-only",
+        "roster": {
+            "source": roster_path,
+            "reviewers": reviewers,
+        },
+        "round_1_independent_findings": round_1,
+        "round_2_counter_review": round_2,
+        "hermes_final_arbitration": {
+            "status": "pending",
+            "allowed_outcomes": list(ARBITRATION_BUCKETS),
+            "outcome_buckets": {bucket: [] for bucket in ARBITRATION_BUCKETS},
+            "final_decision": "hold",
+        },
+        "quality_metrics": metrics,
+    }
+
+
 def run_dual_run(
     *,
     pr_url: str,
@@ -252,6 +374,7 @@ def run_dual_run(
     snapshot = load_action_snapshot(pr_ref, action_snapshot_fixture)
     dry_run_results = _dry_run_actions(dispatch_result)
     comparison = compare_gate_to_action(dispatch_result["classify"], snapshot)
+    debate_gate = build_debate_gate_schema(dispatch_result, roster_path=roster_path)
     return {
         "version": VERSION,
         "mode": "dry-run",
@@ -263,6 +386,7 @@ def run_dual_run(
         },
         "existing_action_snapshot": snapshot.to_dict(),
         "comparison": comparison,
+        "multi_reviewer_debate_gate": debate_gate,
         "safety": {
             "mutations_enabled": False,
             "live_github_mutations": "disabled",
@@ -309,6 +433,23 @@ def render_markdown_report(report: dict[str, Any]) -> str:
             lines.append(f"- `{' '.join(str(part) for part in command)}`")
     else:
         lines.append("- none")
+    debate_gate = report.get("multi_reviewer_debate_gate") or {}
+    roster = debate_gate.get("roster") or {}
+    reviewers = roster.get("reviewers") or []
+    lines.extend(["", "## Multi-Reviewer Debate Gate", ""])
+    if reviewers:
+        lines.append(
+            "- roster: "
+            + ", ".join(str(item.get("reviewer") or item.get("key")) for item in reviewers)
+        )
+    else:
+        lines.append("- roster: none")
+    arbitration = debate_gate.get("hermes_final_arbitration") or {}
+    lines.append(f"- arbitration status: `{arbitration.get('status') or 'unknown'}`")
+    lines.append(
+        "- arbitration buckets: "
+        + ", ".join(str(item) for item in arbitration.get("allowed_outcomes") or [])
+    )
     lines.append("")
     return "\n".join(lines)
 
