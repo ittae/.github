@@ -1,0 +1,20 @@
+{
+  "labels": [
+    {
+      "name": "high-risk"
+    },
+    {
+      "name": "needs-human-review"
+    }
+  ],
+  "comments": [
+    {
+      "author": {
+        "login": "github-actions[bot]"
+      },
+      "body": "⚠️ **민감 영역 변경 감지** — AI 리뷰는 진행되지만 자동 머지 라벨(ai-approved) 부여 안 됨. 사람 머지 필수.\n\n매치된 파일:\n```\n- lib/features/auth/data/repositories/auth_repository_impl.dart\n- pubspec.yaml\n```\n\nHigh-risk 영역 (auth, secure_storage, iap, router, storage_keys, pubspec, native configs, .github/workflows, .env) PR은 점수 통과 시에도 needs-human-review 라벨 유지.",
+      "createdAt": "2026-05-31T00:00:00Z",
+      "url": "https://github.com/ittae/ittae/pull/1#issuecomment-1"
+    }
+  ]
+}

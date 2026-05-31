@@ -85,16 +85,58 @@ action 종류: `ADD_LABELS`, `REMOVE_LABELS`, `POST_COMMENT`, `SET_CHECK_STATUS`
 1. **기존 Action 유지**: `.github/workflows/claude-code-review.yml` 및 관련 워크플로는 그대로 두고 평소처럼 라벨/코멘트를 단다 (= ground truth).
 2. **로컬 게이트 dry-run 병행**: 새 PR event마다 로컬 Hermes 런타임에서
    ```bash
-   python3 tools/local_pr_review_dispatcher.py --pr-url <URL> --dry-run > /tmp/gate.json
-   # classify 블록을 adapter로 dry-run 적용 (mutation 없음)
+   python3 tools/local_pr_review_dual_run.py \
+     --pr-url <URL> \
+     --dry-run \
+     --output markdown \
+     > /tmp/hermes-pr-review-gate-dual-run.md
    ```
-   를 돌려 `classify.verdict` / `would_apply_labels` / `would_post_comments`를 기록한다.
+   를 돌려 `classify.verdict` / `would_apply_labels` / `would_post_comments`, adapter dry-run command, 기존 Action 라벨/코멘트 스냅샷을 함께 기록한다. 이 명령은 `gh pr view --json labels,comments` 읽기만 수행하며 라벨/코멘트/check-run을 만들지 않는다.
 3. **비교 로그**: PR별로 (a) 기존 Action이 실제로 단 라벨/코멘트와 (b) 로컬 게이트 dry-run이 산출한 라벨/코멘트를 나란히 남긴다. 불일치는 모두 분류한다.
    - verdict 불일치 (proceed vs too-large vs high-risk)
    - 라벨 집합 차이
    - 코멘트 본문 차이 (템플릿은 verbatim 포팅이므로 일치해야 정상)
-4. **합격 기준 (Phase 2 진입 전제)**: 1주(또는 최소 N건의 PR) 동안 verdict·라벨 불일치 0건, 코멘트 본문 차이는 의도된 것만. 미해결 불일치가 있으면 Phase 2(Action 제거)로 넘어가지 않는다.
-5. **승격**: 합격 후 별도 PR/승인으로 `GhCliExecutor(enable_mutations=True)`를 켜고, 그 다음 별도 단계에서 기존 Action을 제거/비활성화한다 (한 번에 둘 다 하지 않는다).
+   - multi-reviewer debate gate scaffold 누락 여부
+4. **multi-reviewer debate gate 기록**: dual-run 리포트의 `multi_reviewer_debate_gate`에 reviewer roster, Round 1 독립 finding, Round 2 counter-review, Hermes final arbitration, reviewer별 품질 지표를 함께 남긴다.
+   - 기본 roster는 `Claude`, `Codex`, `Gemini`, `Copilot`, `local-hermes` 계열을 표현한다. 실제 로컬 모델 이름이 확정되기 전에는 `local-hermes` placeholder로 둔다.
+   - Round 1 finding은 `file`, `line`, `evidence`를 포함해야 한다.
+   - Round 2 counter-review는 대상 finding과 `agree`, `dispute`, `hold` 중 하나의 입장을 포함해야 하며 `file`, `line`, `evidence`를 포함해야 한다.
+   - Hermes final arbitration은 `must-fix`, `nice-to-have`, `false-positive`, `hold`, `safe-to-merge` bucket으로 최종 판정을 정리한다.
+   - 품질 지표는 reviewer, finding count, accepted count, false positive count 또는 unknown 상태를 기록하고, elapsed/cost/local resource는 `extensions`에 나중에 채울 수 있게 둔다.
+5. **운영 체크리스트**:
+   - 매일 열린 PR 또는 최근 업데이트 PR을 대상으로 위 명령을 실행한다.
+   - `comparison.status`가 `match` 또는 `no_expected_gate_action`인지 확인한다.
+   - `mismatch`면 `missing_labels`, `unexpected_gate_labels`, `missing_comment_indexes`를 기준으로 dispatcher 포팅 문제인지 기존 Action 실행 누락인지 분류한다.
+   - 리포트 파일에는 raw token/secret을 넣지 않고 PR URL, head SHA, 라벨/코멘트 비교 결과, dry-run command만 남긴다.
+   - dual-run 중에는 기존 Action workflow, branch protection, required checks, `GhCliExecutor(enable_mutations=True)`를 변경하지 않는다.
+6. **판정 기준**: 1주 또는 최소 10개 PR 이벤트 중 더 늦게 충족되는 시점까지 `mismatch` 0건이어야 한다. `no_expected_gate_action`은 로컬 gate가 라벨/코멘트를 기대하지 않는 정상 PR로 집계한다. 미해결 `mismatch`가 1건이라도 있으면 Action 제거/비활성화 단계로 넘어가지 않는다.
+7. **승격**: 합격 후 별도 PR/승인으로 `GhCliExecutor(enable_mutations=True)`를 켜고, 그 다음 별도 단계에서 기존 Action을 제거/비활성화한다 (한 번에 둘 다 하지 않는다).
+
+### dual-run 리포트 형식
+
+`tools/local_pr_review_dual_run.py`는 JSON과 Markdown을 모두 출력한다.
+
+```bash
+python3 tools/local_pr_review_dual_run.py \
+  --pr-url https://github.com/ittae/ittae/pull/425 \
+  --dry-run \
+  --output json
+```
+
+핵심 필드:
+
+| 필드 | 의미 |
+|---|---|
+| `local_gate.classify` | Phase 0 dispatcher가 계산한 verdict, 라벨, 코멘트 |
+| `local_gate.dry_run_actions` | Phase 1 adapter가 기록한 would-run `gh` argv. `executed=false`가 정상 |
+| `existing_action_snapshot` | 기존 GitHub Action의 실제 PR labels/comments read-only 스냅샷 |
+| `comparison.status` | `match`, `mismatch`, `no_expected_gate_action` 중 하나 |
+| `multi_reviewer_debate_gate.roster.reviewers` | Claude/Codex/Gemini/Copilot/local 계열 reviewer roster |
+| `multi_reviewer_debate_gate.round_1_independent_findings` | reviewer별 독립 finding 목록. 각 finding은 `file`, `line`, `evidence` 필요 |
+| `multi_reviewer_debate_gate.round_2_counter_review` | 다른 reviewer finding에 대한 `agree`/`dispute`/`hold` counter-review |
+| `multi_reviewer_debate_gate.hermes_final_arbitration` | `must-fix`, `nice-to-have`, `false-positive`, `hold`, `safe-to-merge` 최종 bucket |
+| `multi_reviewer_debate_gate.quality_metrics` | reviewer별 finding/accepted/false-positive 또는 unknown 지표와 elapsed/cost/local resource 확장 필드 |
+| `safety.mutations_enabled` | 항상 `false`여야 한다 |
 
 ## Rollback 방법
 
@@ -113,6 +155,7 @@ action 종류: `ADD_LABELS`, `REMOVE_LABELS`, `POST_COMMENT`, `SET_CHECK_STATUS`
 ```bash
 python3 tools/tests/test_pr_review_gate_actions.py        # adapter (21개)
 python3 tools/tests/test_local_pr_review_dispatcher.py    # 기존 dispatcher 회귀 (27개)
+python3 tools/tests/test_local_pr_review_dual_run.py      # dual-run reporter
 python3 -m py_compile tools/*.py
 ```
 
