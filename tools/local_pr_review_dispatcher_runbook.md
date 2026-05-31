@@ -133,6 +133,7 @@ python3 tools/tests/test_local_pr_review_dispatcher.py
 - `tools/fixtures/synthetic_high_risk.json` — `lib/features/auth/...` + `pubspec.yaml` 변경. proceed / high-risk 케이스.
 - `tools/fixtures/synthetic_too_large.json` — 합산 2000줄 변경. too-large 케이스.
 - `tools/fixtures/roster_phase0.json` — `~/.hermes/workspace/tools/reviewer_roster.json` 의 Phase 0 스냅샷.
+- `tools/fixtures/action_snapshot_high_risk.json` — Phase 2 dual-run reporter가 기존 Action labels/comments 스냅샷과 로컬 gate dry-run 결과를 비교할 때 쓰는 high-risk fixture.
 
 추후 실제 PR 캡처를 추가하려면 다음과 같이 갱신합니다:
 
@@ -142,9 +143,20 @@ gh pr view <NUM> --repo <OWNER>/<REPO> \
   > tools/fixtures/<owner>_<repo>_pr_<num>.json
 ```
 
-## Phase 1 (진행 중)
+## Phase 2 dual-run
 
 Phase 1 아키텍처 / mutation adapter / dual-run / rollback 가이드는 [`tools/phase1_local_pr_review_gate.md`](./phase1_local_pr_review_gate.md) 를 참고하세요. mutation adapter는 [`tools/pr_review_gate_actions.py`](./pr_review_gate_actions.py) 에 분리돼 있고 기본 dry-run / disabled-by-default 입니다.
+
+Phase 2의 non-mutating 비교 리포트는 [`tools/local_pr_review_dual_run.py`](./local_pr_review_dual_run.py) 로 생성합니다.
+
+```bash
+python3 tools/local_pr_review_dual_run.py \
+  --pr-url <URL> \
+  --dry-run \
+  --output markdown
+```
+
+이 명령은 dispatcher dry-run, adapter dry-run, 기존 Action labels/comments read-only 스냅샷을 하나의 리포트로 묶습니다. `comparison.status`는 `match`, `mismatch`, `no_expected_gate_action` 중 하나이며, `safety.mutations_enabled=false`가 정상입니다.
 
 ## Phase 1+ 에서 추가될 항목 (현 PR 범위 밖)
 
