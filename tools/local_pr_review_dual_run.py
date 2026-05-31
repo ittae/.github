@@ -22,6 +22,7 @@ import local_pr_review_dispatcher as dispatcher
 import pr_review_gate_actions as actions
 
 TARGET_GATE_LABELS = ("too-large", "high-risk", "needs-human-review")
+PROVENANCE_GATE_LABELS = ("too-large", "high-risk")
 VERSION = "0.1.0"
 
 
@@ -166,6 +167,14 @@ def _expected_comment_bodies(classify: dict[str, Any]) -> list[str]:
     return bodies
 
 
+def _gate_labels_with_provenance(labels: tuple[str, ...]) -> set[str]:
+    gate_labels = set(labels).intersection(TARGET_GATE_LABELS)
+    provenance_labels = gate_labels.intersection(PROVENANCE_GATE_LABELS)
+    if "needs-human-review" in gate_labels and not provenance_labels:
+        gate_labels.remove("needs-human-review")
+    return gate_labels
+
+
 def compare_gate_to_action(
     classify: dict[str, Any],
     snapshot: ActionSnapshot,
@@ -176,7 +185,7 @@ def compare_gate_to_action(
         if isinstance(label, str) and label.strip()
     )
     expected_label_set = set(expected_labels)
-    actual_gate_label_set = set(snapshot.labels).intersection(TARGET_GATE_LABELS)
+    actual_gate_label_set = _gate_labels_with_provenance(snapshot.labels)
 
     expected_bodies = _expected_comment_bodies(classify)
     comment_results = [

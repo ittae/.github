@@ -71,6 +71,32 @@ class TestCompareGateToAction(unittest.TestCase):
         comparison = dual_run.compare_gate_to_action(classify, snapshot)
         self.assertEqual(comparison["status"], "no_expected_gate_action")
 
+    def test_needs_human_review_alone_is_not_gate_footprint(self) -> None:
+        snapshot = dual_run.ActionSnapshot(
+            labels=("needs-human-review",),
+            comments=(),
+            source="test",
+        )
+        classify = {"would_apply_labels": [], "would_post_comments": []}
+        comparison = dual_run.compare_gate_to_action(classify, snapshot)
+        self.assertEqual(comparison["status"], "no_expected_gate_action")
+        self.assertEqual(comparison["actual_gate_labels"], [])
+        self.assertEqual(comparison["unexpected_gate_labels"], [])
+
+    def test_needs_human_review_counts_with_high_risk_provenance(self) -> None:
+        snapshot = dual_run.ActionSnapshot(
+            labels=("high-risk", "needs-human-review"),
+            comments=(),
+            source="test",
+        )
+        classify = {"would_apply_labels": [], "would_post_comments": []}
+        comparison = dual_run.compare_gate_to_action(classify, snapshot)
+        self.assertEqual(comparison["status"], "mismatch")
+        self.assertEqual(
+            comparison["unexpected_gate_labels"],
+            ["high-risk", "needs-human-review"],
+        )
+
     def test_detects_missing_expected_label(self) -> None:
         snapshot = dual_run.ActionSnapshot(labels=("high-risk",), comments=(), source="test")
         classify = {
