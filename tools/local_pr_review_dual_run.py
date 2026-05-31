@@ -142,11 +142,18 @@ def load_action_snapshot(pr_ref: dispatcher.PRRef, fixture_path: str | None) -> 
     return action_snapshot_from_payload(payload, source="gh:pr-view")
 
 
+def _normalize_comment_body(body: str) -> str:
+    return body.replace("\r\n", "\n")
+
+
 def _comment_matched(expected_body: str, comments: tuple[dict[str, Any], ...]) -> bool:
-    expected = expected_body.strip()
+    expected = _normalize_comment_body(expected_body).strip()
     if not expected:
         return True
-    return any(str(comment.get("body") or "").strip() == expected for comment in comments)
+    return any(
+        _normalize_comment_body(str(comment.get("body") or "")).strip() == expected
+        for comment in comments
+    )
 
 
 def _expected_comment_bodies(classify: dict[str, Any]) -> list[str]:

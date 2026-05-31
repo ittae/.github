@@ -88,6 +88,20 @@ class TestCompareGateToAction(unittest.TestCase):
         self.assertEqual(comparison["status"], "mismatch")
         self.assertEqual(comparison["unexpected_gate_labels"], ["too-large"])
 
+    def test_comment_body_match_normalizes_crlf_to_lf(self) -> None:
+        snapshot = dual_run.ActionSnapshot(
+            labels=(),
+            comments=({"body": "line 1\r\nline 2\r\nline 3"},),
+            source="test",
+        )
+        classify = {
+            "would_apply_labels": [],
+            "would_post_comments": [{"target": "pr", "body": "line 1\nline 2\nline 3"}],
+        }
+        comparison = dual_run.compare_gate_to_action(classify, snapshot)
+        self.assertEqual(comparison["status"], "match")
+        self.assertEqual(comparison["missing_comment_indexes"], [])
+
 
 class TestCli(unittest.TestCase):
     def test_cli_requires_dry_run(self) -> None:
