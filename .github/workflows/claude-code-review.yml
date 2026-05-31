@@ -157,8 +157,8 @@ jobs:
           echo "pr_size=$TOTAL" >> $GITHUB_OUTPUT
 
           if [ "$TOTAL" -gt "$PR_SIZE_LIMIT" ]; then
-            gh pr edit "$PR_NUM" -R "$REPO" --add-label "too-large" 2>/dev/null || true
-            BODY=$(printf '🚫 **PR 크기 %s줄 — %s줄 초과**\n\n500줄 넘는 PR은 AI/사람 모두 정확도가 급락합니다. 단일 concern 단위로 분할 후 다시 올려주세요.\n\n@claude @codex @gemini @copilot 이 PR을 의미 단위로 쪼개서 별도 PR로 다시 만들어주세요.' "$TOTAL" "$PR_SIZE_LIMIT")
+            gh pr edit "$PR_NUM" -R "$REPO" --add-label "too-large" --add-label "needs-human-review" 2>/dev/null || true
+            BODY=$(printf '🚫 **PR 크기 %s줄 — %s줄 초과**\n\nAI/사람 모두 정확도가 급락합니다. 단일 concern 단위로 분할 후 다시 올려주세요. 자동 agent 멘션은 사용하지 않습니다. 사람이 Multica 이슈 코멘트에서 적절한 worker를 명시적으로 dispatch해야 합니다.' "$TOTAL" "$PR_SIZE_LIMIT")
             gh pr comment "$PR_NUM" -R "$REPO" --body "$BODY" || true
             echo "verdict=too-large" >> $GITHUB_OUTPUT; exit 0
           fi
@@ -458,11 +458,10 @@ jobs:
               gh pr comment "$PR_NUM" -R "$REPO" --body "$BODY" || true
             fi
           else
-            gh pr edit "$PR_NUM" -R "$REPO" --add-label "ai-iterating" --add-label "needs-rework" 2>/dev/null || true
+            gh pr edit "$PR_NUM" -R "$REPO" --add-label "needs-rework" --add-label "needs-human-review" 2>/dev/null || true
             HIGH_C='${{ steps.score.outputs.high_count }}'
             MED_C='${{ steps.score.outputs.medium_count }}'
             CATS='${{ steps.score.outputs.categories }}'
-            # 자가 수정 contract 명확화 (개선 #1)
-            BODY=$(printf '🔄 **자가 수정 요청** (점수 %s/10.0 < %s, iteration %s/%s)\n\n@claude @codex @gemini @copilot\n\n## 작업 contract\n\n**우선순위**: HIGH (필수) > MEDIUM (권장) > LOW (선택)\n\n현재 미해결: HIGH=%s, MEDIUM=%s | 카테고리: %s\n\n## 응답 형식 (MANDATORY)\n\n1. **HIGH 항목부터** 위 리뷰 코멘트의 "해결 방법"을 따라 코드 수정\n2. 각 항목별 1 commit 분리 (atomic) 또는 한 commit에 묶기 (작은 PR)\n3. Commit message: `fix(<scope>): <한 줄 요약>` 형식\n4. PR push로 자동 sync → 워크플로 재트리거 → 재리뷰 (트랙 A)\n5. 재리뷰는 이전 지적 항목만 점수 반영 (골대 이동 금지)\n\n## 재시도 한도\n\n%s회 누적 후 자동 종료 → 사람 검토 위임 (`needs-human-review` 라벨)\n\n## 요청 사항\n\n어느 도구든 먼저 응답한 도구가 처리. 응답 시 무엇을 수정했는지 commit message에 명시.' "$SCORE" "$PASS_THRESHOLD" "$ITER" "$ITERATE_LIMIT" "$HIGH_C" "$MED_C" "$CATS" "$ITERATE_LIMIT")
+            BODY=$(printf '🛑 **사람 dispatch 필요** (점수 %s/10.0 < %s, iteration %s/%s)\n\n이 PR은 AI 리뷰 기준을 통과하지 못했습니다. 자동 self-improve 멘션은 사용하지 않습니다. `github-actions[bot]`이 게시한 멘션은 `claude-mention-light`의 bot sender guard에서 SKIP되고, 다른 봇 멘션도 follow-up code 변경 작업을 trigger하지 않습니다.\n\n현재 미해결: HIGH=%s, MEDIUM=%s | 카테고리: %s\n\n## 다음 조치\n\n사람이 Multica 이슈 코멘트에서 적절한 worker를 명시적으로 dispatch한 뒤, 리뷰 코멘트의 HIGH → MEDIUM → LOW 순서로 수정하게 하세요. 수정 PR push 후 이 워크플로가 다시 실행되어 재리뷰합니다.\n\n## 참고\n\n이 단기 정리는 dead self-improve loop 제거입니다. 장기적으로는 ITT-276 Hermes Local PR Review Gate 쪽에서 webhook 기반 dispatch로 흡수합니다.' "$SCORE" "$PASS_THRESHOLD" "$ITER" "$ITERATE_LIMIT" "$HIGH_C" "$MED_C" "$CATS")
             gh pr comment "$PR_NUM" -R "$REPO" --body "$BODY" || true
           fi

@@ -1,0 +1,44 @@
+{
+  "reviewers": {
+    "claude-code": {
+      "display_name": "Claude",
+      "role": "required",
+      "availability": "active",
+      "legacy_names": ["Claude", "claude", "claude[bot]"],
+      "signal_source": ["multica", "github-review"],
+      "agent_ids": ["ac215516-af99-4832-b5f8-d8cb99e51260"],
+      "github_logins": ["claude", "claude[bot]"],
+      "excluded_when_worker": false
+    },
+    "codex": {
+      "display_name": "Codex",
+      "role": "required",
+      "availability": "active",
+      "legacy_names": ["Codex"],
+      "signal_source": "multica",
+      "agent_ids": ["cbe053f4-b53e-4786-81de-6554ddb86fad"],
+      "github_logins": [],
+      "excluded_when_worker": true
+    },
+    "gemini": {
+      "display_name": "Gemini",
+      "role": "supplementary",
+      "availability": "active",
+      "legacy_names": ["Gemini", "gemini-code-assist"],
+      "signal_source": ["multica", "github-review"],
+      "agent_ids": ["cc7dd930-ea0f-485f-b74b-134e1da1c2f1"],
+      "github_logins": ["gemini-code-assist", "gemini-code-assist[bot]"],
+      "excluded_when_worker": false
+    },
+    "copilot": {
+      "display_name": "Copilot",
+      "role": "supplementary",
+      "availability": "active",
+      "legacy_names": ["Copilot", "copilot-pull-request-reviewer"],
+      "signal_source": ["github-review"],
+      "agent_ids": ["3d75b4bf-146f-4d4f-91df-81d28577004d"],
+      "github_logins": ["copilot-pull-request-reviewer", "copilot-pull-request-reviewer[bot]"],
+      "excluded_when_worker": false
+    }
+  }
+}

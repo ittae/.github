@@ -1,0 +1,37 @@
+{
+  "additions": 4,
+  "author": {
+    "id": "MDQ6VXNlcjU2ODY5NTcx",
+    "is_bot": false,
+    "login": "get6",
+    "name": "sunhwang"
+  },
+  "baseRefName": "main",
+  "deletions": 96,
+  "files": [
+    {
+      "additions": 2,
+      "changeType": "MODIFIED",
+      "deletions": 2,
+      "path": ".claude/commands/issue.md"
+    },
+    {
+      "additions": 0,
+      "changeType": "DELETED",
+      "deletions": 92,
+      "path": ".github/pull_request_template.md"
+    },
+    {
+      "additions": 2,
+      "changeType": "MODIFIED",
+      "deletions": 2,
+      "path": "docs/guide/Git 활용 방안.md"
+    }
+  ],
+  "headRefName": "chore/ITT-180-use-org-pr-template-ittae",
+  "headRefOid": "02337bf3550692eebe391770a8200c32ddc4cc5e",
+  "number": 425,
+  "state": "MERGED",
+  "title": "chore: ITT-180 org default PR 템플릿 사용",
+  "url": "https://github.com/ittae/ittae/pull/425"
+}
