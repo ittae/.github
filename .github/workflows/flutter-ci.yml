@@ -81,6 +81,7 @@ jobs:
   flutter-ci:
     name: ci shard ${{ matrix.shard }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       # 한 샤드 실패해도 다른 샤드는 계속 — 전체 그림을 보고 fix 하기 위함.
       fail-fast: false
@@ -202,6 +203,7 @@ jobs:
     needs: flutter-ci
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       coverage: ${{ steps.cov.outputs.coverage }}
     steps:
