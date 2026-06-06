@@ -452,7 +452,6 @@ jobs:
           echo "high_count=${HIGH_COUNT:-0}" >> $GITHUB_OUTPUT
           echo "medium_count=${MEDIUM_COUNT:-0}" >> $GITHUB_OUTPUT
           echo "categories=$CATEGORIES" >> $GITHUB_OUTPUT
-          SCORE=$(echo "$LATEST" | grep -oP '총점:\s*\K[0-9]+(\.[0-9]+)?' | head -1)
 
           if [ -z "$SCORE" ]; then
             echo "❌ 점수 추출 실패"
