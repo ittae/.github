@@ -28,3 +28,6 @@
 - PR의 `AI Review Focus`가 위험 영역과 검증 부족 영역을 명확히 설명하는지 확인합니다.
 - user-facing copy, trust, brand quality에 영향을 주지 않는 단순 typo는 과도하게 우선순위를 높이지 않습니다.
 - 리뷰 코멘트는 가능한 한 file/line, risk level, suggested fix를 포함해 실행 가능하게 작성합니다.
+- PR title이 `type: ITT-123 ...` 형식인지 확인합니다. ITT 키가 type 앞 prefix(`ITT-462: ...`)나 대괄호(`[ITT-462] ...`)로 들어가 있거나 Conventional Commits 타입이 없으면 지적합니다.
+- 변경 성격이 UI/시각(Flutter, React, web/mobile UI, screenshot 생성, design/layout/component)인데 screenshot/preview도 미첨부 사유도 없으면 지적합니다. 적용 기준은 저장소 이름이 아니라 변경 성격입니다.
+- branch·title·body 중 어디에도 `ITT-123` 키가 없어 Multica 자동 연결이 안 되는 PR이면 지적합니다.
