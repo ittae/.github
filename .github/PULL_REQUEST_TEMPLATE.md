@@ -61,7 +61,7 @@
 
 ## Commit / PR Title Convention
 
-- ✅ `type: <한국어 설명>` 사용
+- ✅ `<type>: <한국어 설명>` 사용
   - 예: `feat: 로그인 화면 에러 메시지 다국어 처리`
 - Conventional Commits 타입을 따른다: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`, `build`, `style`, `revert`
 - Multica 이슈 키(`ITT-123`)는 type 뒤에 둔다. title 맨 앞 prefix나 대괄호로 쓰지 않는다.
@@ -74,7 +74,7 @@
 
 ## PR 마무리 체크리스트
 
-- [ ] PR title이 `type: ITT-123 ...` 형식이다 (type 뒤에 ITT 키, 한국어 설명).
+- [ ] PR title이 `<type>: ITT-123 ...` 형식이다 (`type` 뒤에 ITT 키, 한국어 설명).
 - [ ] PR body가 Korean-first로 작성됐다.
 - [ ] UI 변경이면 screenshot/preview를 첨부했거나, 미첨부 사유를 적었다.
 - [ ] branch 이름·title·body 중 하나 이상에 `ITT-123` 키가 있어 Multica 이슈에 자동 연결된다 (commit message·PR comment만으로는 연결되지 않음).
