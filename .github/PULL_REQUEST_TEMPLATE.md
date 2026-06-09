@@ -61,7 +61,7 @@
 
 ## Commit / PR Title Convention
 
-- ✅ `type: <한국어 설명>` 사용
+- ✅ `<type>: <한국어 설명>` 사용
   - 예: `feat: 로그인 화면 에러 메시지 다국어 처리`
 - Conventional Commits 타입을 따른다: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `ci`, `build`, `style`, `revert`
 - Multica 이슈 키(`ITT-123`)는 type 뒤에 둔다. title 맨 앞 prefix나 대괄호로 쓰지 않는다.
