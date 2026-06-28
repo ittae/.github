@@ -61,10 +61,27 @@ on:
       test_shards_json:
         type: string
         default: '[0,1,2,3]'
+      # 로컬 전체 검증 결과를 커밋한 경우 CI가 무결성을 확인한다.
+      # 기본값은 optional이다. artifact가 없으면 기존 full CI가 그대로 gate 역할을 한다.
+      local_verify_artifact_path:
+        type: string
+        default: '.github/local_verify.json'
+      local_verify_required:
+        type: boolean
+        default: false
+      local_verify_source_exclude:
+        type: string
+        default: '.github/local_verify.json'
     outputs:
       coverage:
         description: 'Business-logic line coverage percentage (or "n/a" if no measurable target)'
         value: ${{ jobs.coverage.outputs.coverage }}
+      local_verify_status:
+        description: 'local_verify attestation status: missing or verified'
+        value: ${{ jobs.local_verify_attestation.outputs.status }}
+      local_verify_source_hash:
+        description: 'Recomputed git-tracked source hash when local_verify is present'
+        value: ${{ jobs.local_verify_attestation.outputs.source_hash }}
 
 env:
   PR_NUM: ${{ github.event.pull_request.number }}
@@ -74,6 +91,156 @@ env:
   TEST_EXCLUDE_PATHS: ${{ inputs.test_exclude_paths }}
 
 jobs:
+  # ---------------------------------------------------------------
+  # local_verify artifact attestation. Full CI remains the source of
+  # truth unless callers explicitly require the artifact.
+  # ---------------------------------------------------------------
+  local_verify_attestation:
+    name: local_verify attestation
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      status: ${{ steps.verify.outputs.status }}
+      source_hash: ${{ steps.verify.outputs.source_hash }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - id: verify
+        name: Verify local_verify artifact
+        env:
+          ARTIFACT_PATH: ${{ inputs.local_verify_artifact_path }}
+          REQUIRE_ARTIFACT: ${{ inputs.local_verify_required }}
+          SOURCE_EXCLUDE: ${{ inputs.local_verify_source_exclude }}
+          EXPECTED_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          if [ ! -f "$ARTIFACT_PATH" ]; then
+            echo "status=missing" >> "$GITHUB_OUTPUT"
+            echo "source_hash=" >> "$GITHUB_OUTPUT"
+            if [ "$REQUIRE_ARTIFACT" = "true" ]; then
+              echo "::error::local_verify artifact not found: $ARTIFACT_PATH"
+              exit 1
+            fi
+            echo "ℹ️ local_verify artifact 없음 — 기존 full CI로 검증 계속"
+            exit 0
+          fi
+
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          import subprocess
+          import sys
+
+          artifact_path = os.environ["ARTIFACT_PATH"]
+          expected_repository = os.environ["EXPECTED_REPOSITORY"]
+          output_path = os.environ["GITHUB_OUTPUT"]
+
+          def fail(message: str) -> None:
+              print(f"::error::{message}")
+              sys.exit(1)
+
+          with open(artifact_path, "r", encoding="utf-8") as handle:
+              try:
+                  artifact = json.load(handle)
+              except json.JSONDecodeError as exc:
+                  fail(f"local_verify JSON parse failed: {exc}")
+
+          if artifact.get("schema_version") != 1:
+              fail("schema_version must be 1")
+          if artifact.get("repository") != expected_repository:
+              fail(
+                  "repository mismatch: "
+                  f"{artifact.get('repository')} != {expected_repository}"
+              )
+
+          source = artifact.get("source")
+          verification = artifact.get("verification")
+          if not isinstance(source, dict):
+              fail("source must be an object")
+          if not isinstance(verification, dict):
+              fail("verification must be an object")
+
+          algorithm = source.get("algorithm")
+          expected_hash = source.get("hash")
+          if algorithm != "git-tracked-sha256-v1":
+              fail("source.algorithm must be git-tracked-sha256-v1")
+          if not isinstance(expected_hash, str) or len(expected_hash) != 64:
+              fail("source.hash must be a 64-character sha256 hex string")
+
+          commands = verification.get("commands")
+          tool_versions = verification.get("tool_versions")
+          test_manifest = verification.get("test_manifest")
+          result_summary = verification.get("result_summary")
+          if not isinstance(commands, list) or not commands:
+              fail("verification.commands must be a non-empty list")
+          if not isinstance(tool_versions, dict) or not tool_versions:
+              fail("verification.tool_versions must be a non-empty object")
+          if not isinstance(test_manifest, dict):
+              fail("verification.test_manifest must be an object")
+          if not isinstance(result_summary, dict):
+              fail("verification.result_summary must be an object")
+          if result_summary.get("status") != "passed":
+              fail("verification.result_summary.status must be passed")
+
+          for index, command in enumerate(commands):
+              if not isinstance(command, dict):
+                  fail(f"verification.commands[{index}] must be an object")
+              if not command.get("command"):
+                  fail(f"verification.commands[{index}].command is required")
+              if command.get("exit_code") != 0:
+                  fail(f"verification.commands[{index}].exit_code must be 0")
+
+          test_count = test_manifest.get("test_count")
+          if not isinstance(test_count, int) or test_count < 0:
+              fail("verification.test_manifest.test_count must be a non-negative integer")
+          test_files = test_manifest.get("files")
+          if not isinstance(test_files, list):
+              fail("verification.test_manifest.files must be a list")
+
+          raw_excludes = os.environ.get("SOURCE_EXCLUDE", "")
+          excludes = {artifact_path}
+          for item in raw_excludes.replace(",", "\n").splitlines():
+              item = item.strip()
+              if item:
+                  excludes.add(item)
+
+          tracked = subprocess.check_output(["git", "ls-files", "-z"])
+          files = []
+          for raw_path in tracked.split(b"\0"):
+              if not raw_path:
+                  continue
+              path = raw_path.decode("utf-8")
+              if path in excludes:
+                  continue
+              if not os.path.isfile(path):
+                  continue
+              files.append(path)
+
+          digest = hashlib.sha256()
+          for path in sorted(files):
+              digest.update(path.encode("utf-8"))
+              digest.update(b"\0")
+              with open(path, "rb") as handle:
+                  for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                      digest.update(chunk)
+              digest.update(b"\0")
+          actual_hash = digest.hexdigest()
+
+          if actual_hash != expected_hash:
+              fail(f"source.hash mismatch: {expected_hash} != {actual_hash}")
+
+          with open(output_path, "a", encoding="utf-8") as output:
+              output.write("status=verified\n")
+              output.write(f"source_hash={actual_hash}\n")
+
+          print(f"✅ local_verify artifact verified: {artifact_path}")
+          print(f"source_hash={actual_hash}")
+          PY
+
   # ---------------------------------------------------------------
   # 테스트 샤드 매트릭스. shard 0이 analyze / 테스트 누락 검증을 겸한다.
   # 각 샤드는 자기 몫의 lcov만 생성하고 coverage job에서 머지.
@@ -225,17 +392,17 @@ jobs:
         run: |
           mkdir -p coverage
           # `-a`로 입력 lcov를 누적 add. 동일 source의 DA 라인은 lcov가 hit 합산 처리.
-          ARGS=""
+          ARGS=()
           for f in coverage-shards/lcov-*.info; do
             [ -f "$f" ] || continue
-            ARGS="$ARGS -a $f"
+            ARGS+=("-a" "$f")
           done
-          if [ -z "$ARGS" ]; then
+          if [ "${#ARGS[@]}" -eq 0 ]; then
             echo "❌ 어떤 샤드도 lcov를 생성하지 못했습니다."
             exit 1
           fi
-          lcov $ARGS -o coverage/lcov.info
-          echo "Merged $(echo "$ARGS" | grep -o '\-a' | wc -l) shard lcov files"
+          lcov "${ARGS[@]}" -o coverage/lcov.info
+          echo "Merged $(printf '%s\n' "${ARGS[@]}" | grep -c '^-a$') shard lcov files"
 
       - id: cov
         name: Coverage 검증 (비즈니스 로직만, ≥${{ env.COVERAGE_MIN }}%)
@@ -261,16 +428,16 @@ jobs:
               printf "%d %d\n", hit, found
             }
           ' coverage/lcov.info > /tmp/cov.txt
-          read LINES_HIT LINES_FOUND < /tmp/cov.txt
+          read -r LINES_HIT LINES_FOUND < /tmp/cov.txt
 
           if [ "${LINES_FOUND:-0}" -eq 0 ]; then
             echo "ℹ️ 비즈니스 로직 변경 없음 또는 측정 대상 없음 — coverage 검증 skip"
-            echo "coverage=n/a" >> $GITHUB_OUTPUT
+            echo "coverage=n/a" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           PERCENT=$((LINES_HIT * 100 / LINES_FOUND))
-          echo "coverage=$PERCENT" >> $GITHUB_OUTPUT
+          echo "coverage=$PERCENT" >> "$GITHUB_OUTPUT"
           echo "비즈니스 로직 Coverage: ${PERCENT}% (${LINES_HIT}/${LINES_FOUND})"
           echo "측정 대상: domain/usecases, data/repositories, core/utils, core/errors (datasources는 강제 대상이지만 측정에서 제외)"
           if [ "$PERCENT" -lt "$COVERAGE_MIN" ]; then
