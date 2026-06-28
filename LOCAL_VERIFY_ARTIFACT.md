@@ -71,7 +71,7 @@ CI가 그 JSON이 현재 source와 맞는지 빠르게 확인하기 위한 attes
     },
     "result_summary": {
       "status": "passed",
-      "coverage": "80",
+      "coverage": 80,
       "notes": "Full local verify passed before PR."
     }
   }
@@ -101,4 +101,3 @@ flutter test --coverage test/
 
 release/tag 직전에는 이 artifact만으로 충분하지 않다. native build, e2e/smoke,
 Fastlane dry-run 또는 store-upload 직전 검증은 별도 release gate에서 다시 수행해야 한다.
-
