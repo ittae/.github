@@ -97,7 +97,7 @@ jobs:
   # ---------------------------------------------------------------
   local_verify_attestation:
     name: local_verify attestation
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ittae]
     timeout-minutes: 5
     outputs:
       status: ${{ steps.verify.outputs.status }}
@@ -247,7 +247,7 @@ jobs:
   # ---------------------------------------------------------------
   flutter-ci:
     name: ci shard ${{ matrix.shard }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ittae]
     timeout-minutes: 30
     strategy:
       # 한 샤드 실패해도 다른 샤드는 계속 — 전체 그림을 보고 fix 하기 위함.
@@ -369,7 +369,7 @@ jobs:
     name: coverage gate
     needs: flutter-ci
     if: ${{ !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ittae]
     timeout-minutes: 15
     outputs:
       coverage: ${{ steps.cov.outputs.coverage }}
