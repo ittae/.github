@@ -46,7 +46,7 @@ jobs:
         github.event.review.author_association == 'COLLABORATOR'
       ) &&
       github.event.sender.type != 'Bot'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ittae]
     permissions:
       contents: write
       pull-requests: write

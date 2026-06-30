@@ -64,7 +64,7 @@ jobs:
   # GATE 0: Skip 조건 (skip-ci / bot / rebase / merge commit)
   # ─────────────────────────────────────────
   gate-skip:
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ittae]
     outputs:
       skip: ${{ steps.check.outputs.skip }}
       reason: ${{ steps.check.outputs.reason }}
@@ -128,7 +128,7 @@ jobs:
   gate-classify:
     needs: gate-skip
     if: needs.gate-skip.outputs.skip != 'true'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ittae]
     outputs:
       verdict: ${{ steps.classify.outputs.verdict }}
       pr_size: ${{ steps.classify.outputs.pr_size }}
@@ -224,7 +224,7 @@ jobs:
   phase2-review:
     needs: gate-classify
     if: needs.gate-classify.outputs.verdict == 'proceed'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ittae]
     permissions:
       contents: read
       pull-requests: write
@@ -419,7 +419,7 @@ jobs:
   phase3-decide:
     needs: [gate-classify, phase2-review]
     if: needs.gate-classify.outputs.verdict == 'proceed' && needs.phase2-review.result == 'success'
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, ittae]
     permissions:
       contents: read
       pull-requests: write
